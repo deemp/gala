@@ -50,10 +50,18 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 	// when it finds GALA sources to attach it to.
 	imports := parseGalaImports(text)
 
+	// Whether the cursor is on a member access, and what precedes the selecting
+	// dot. Computed once: the package-member handler reads the qualifier off
+	// the prefix, and the fall-through guard below asks only whether there was
+	// a dot at all.
+	memberPrefix, isMemberAccess := memberAccessPrefix(strings.Split(text, "\n"), line, char)
+
 	// pkg.Symbol — clicking a member qualified by an imported package name
 	// navigates to that symbol's definition in the package's source files.
-	if loc := h.packageMemberDefinition(text, word, uri, line, char, imports); loc != nil {
-		return []lsp.Location{*loc}, nil
+	if isMemberAccess {
+		if loc := h.packageMemberDefinition(memberPrefix, word, uri, imports); loc != nil {
+			return []lsp.Location{*loc}, nil
+		}
 	}
 
 	// Clicking the imported package name itself navigates to the package.
@@ -72,7 +80,7 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 	// clicking a Go primitive's `.Size()` / `.ByteSize()` sugar (which has no
 	// source definition — the transpiler lowers it to len()/utf8.RuneCountInString)
 	// land in some random type's Size() method.
-	if isDottedMemberAccess(text, line, char) {
+	if isMemberAccess {
 		return nil, nil
 	}
 
@@ -106,6 +114,30 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 				if loc := findDefinitionInDir(currentDir, word); loc != nil {
 					return []lsp.Location{*loc}, nil
 				}
+			}
+		}
+	}
+
+	// Functions before types, because the type scan below also answers for
+	// METHODS. Anything reaching this point is not a member access — the guard
+	// above returned for those — so a bare `Greet()` is the free function, and
+	// letting a same-named method of some unrelated type answer first sent the
+	// cursor to a method the call site cannot even reach.
+	for _, fm := range richAST.Functions {
+		if fm.Name == word {
+			if loc := locationAt(fm.DefinedIn, fm.Pos, word); loc != nil {
+				return []lsp.Location{*loc}, nil
+			}
+			if fm.DefinedIn != "" {
+				loc := fileLocationBroad(fm.DefinedIn, word)
+				if loc != nil {
+					return []lsp.Location{*loc}, nil
+				}
+			}
+			// Fallback: search current directory
+			currentDir := filepath.Dir(uriToPath(uri))
+			if loc := findDefinitionInDir(currentDir, word); loc != nil {
+				return []lsp.Location{*loc}, nil
 			}
 		}
 	}
@@ -157,26 +189,6 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 			}
 			// Fallback: search package directory for method definition
 			if loc := h.searchPackageDirs(uri, typeMeta, word); loc != nil {
-				return []lsp.Location{*loc}, nil
-			}
-		}
-	}
-
-	// Check functions for cross-file definitions
-	for _, fm := range richAST.Functions {
-		if fm.Name == word {
-			if loc := locationAt(fm.DefinedIn, fm.Pos, word); loc != nil {
-				return []lsp.Location{*loc}, nil
-			}
-			if fm.DefinedIn != "" {
-				loc := fileLocationBroad(fm.DefinedIn, word)
-				if loc != nil {
-					return []lsp.Location{*loc}, nil
-				}
-			}
-			// Fallback: search current directory
-			currentDir := filepath.Dir(uriToPath(uri))
-			if loc := findDefinitionInDir(currentDir, word); loc != nil {
 				return []lsp.Location{*loc}, nil
 			}
 		}
@@ -249,27 +261,6 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 	return nil, nil
 }
 
-// isDottedMemberAccess reports whether the identifier at (line, char) is a
-// member access — immediately preceded by a '.' once any partial identifier to
-// its left is walked over. Such a reference resolves only to a receiver member
-// or a package symbol; when those handlers miss, Definition must not fall
-// through to the global by-name scans.
-func isDottedMemberAccess(text string, line, char int) bool {
-	lines := strings.Split(text, "\n")
-	if line < 0 || line >= len(lines) {
-		return false
-	}
-	l := lines[line]
-	if char > len(l) {
-		char = len(l)
-	}
-	i := char
-	for i > 0 && isIdentChar(l[i-1]) {
-		i--
-	}
-	return i > 0 && l[i-1] == '.'
-}
-
 // patternBindingDefinition checks if the word at the cursor is a pattern binding
 // variable (inside case Xxx(b, h) =>). If so, returns its own position as the definition.
 // Also searches backwards for the case line if the cursor is in the body after =>.
@@ -335,27 +326,16 @@ func (h *GalaHandler) dotMethodDefinition(text, word, uri string, curLine, curCh
 	if richAST == nil {
 		return nil
 	}
-	lines := strings.Split(text, "\n")
-	if curLine >= len(lines) {
-		return nil
-	}
-	l := lines[curLine]
-
-	// Check if there's a dot before the word
-	wordStart := curChar
-	for wordStart > 0 && isIdentChar(l[wordStart-1]) {
-		wordStart--
-	}
-	if wordStart <= 0 || l[wordStart-1] != '.' {
-		return nil
-	}
-
-	// Flatten multi-line chain expressions so the resolver can walk back
-	// across newlines (same technique as typeAtDot).
-	flat := flattenLogicalLine(lines, curLine, wordStart-1)
-	enclosingFunc := findEnclosingFunc(lines, curLine)
-	receiverType := resolveChainTypeN(flat, enclosingFunc, richAST, varTypes, 0)
+	// The receiver is resolved by the same call hover and completion dispatch
+	// on, so the three cannot disagree about what an expression's type is — and
+	// definition inherits typeAtDot's flattening, which is what lets it see a
+	// builder chain's selecting dot at the end of the previous line.
+	receiverType := typeAtDot(text, curLine, curChar, richAST, varTypes)
 	if receiverType == "" {
+		return nil
+	}
+	// A package qualifier is not a receiver: packageMemberDefinition answers it.
+	if strings.HasPrefix(receiverType, packagePrefix) {
 		return nil
 	}
 
@@ -377,7 +357,7 @@ func (h *GalaHandler) dotMethodDefinition(text, word, uri string, curLine, curCh
 		}
 
 		// Search in current file for "func (recv Type) MethodName"
-		for i, line := range lines {
+		for i, line := range strings.Split(text, "\n") {
 			trimmed := strings.TrimSpace(line)
 			if strings.HasPrefix(trimmed, "func ") && strings.Contains(trimmed, receiverType) && strings.Contains(trimmed, word) {
 				col := strings.Index(line, word)
@@ -559,37 +539,20 @@ func statDir(path string) string {
 // imported package name, navigating to Symbol's definition in the package's
 // source files (.gala or .go). This is what makes go_interop.SliceAppend and
 // similar Go-interop calls clickable.
-func (h *GalaHandler) packageMemberDefinition(text, word, uri string, curLine, curChar int, imports map[string]string) *lsp.Location {
-	lines := strings.Split(text, "\n")
-	if curLine >= len(lines) {
-		return nil
-	}
-	l := lines[curLine]
-
-	// The word must be immediately preceded by a dot.
-	start := curChar
-	if start > len(l) {
-		start = len(l)
-	}
-	for start > 0 && isIdentChar(l[start-1]) {
-		start--
-	}
-	if start == 0 || l[start-1] != '.' {
-		return nil
-	}
-
-	// The identifier before that dot is the (candidate) package name. It must
+// prefix is the flattened expression before the selecting dot, as computed by
+// memberAccessPrefix.
+func (h *GalaHandler) packageMemberDefinition(prefix, word, uri string, imports map[string]string) *lsp.Location {
+	// The identifier ending the prefix is the (candidate) package name. It must
 	// itself not be preceded by a dot — `x.pkg.Symbol` means `pkg` is a field,
 	// not an imported package.
-	pkgEnd := start - 1
-	pkgStart := pkgEnd
-	for pkgStart > 0 && isIdentChar(l[pkgStart-1]) {
+	pkgStart := len(prefix)
+	for pkgStart > 0 && isIdentChar(prefix[pkgStart-1]) {
 		pkgStart--
 	}
-	if pkgStart == pkgEnd || (pkgStart > 0 && l[pkgStart-1] == '.') {
+	if pkgStart == len(prefix) || (pkgStart > 0 && prefix[pkgStart-1] == '.') {
 		return nil
 	}
-	importPath, ok := imports[l[pkgStart:pkgEnd]]
+	importPath, ok := imports[prefix[pkgStart:]]
 	if !ok {
 		return nil
 	}

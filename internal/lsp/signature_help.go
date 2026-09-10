@@ -384,6 +384,23 @@ func resolveCallSignature(call *callContext, enclosingFunc string, richAST *tran
 	// Method call on a receiver expression.
 	if call.receiverChain != "" {
 		receiverType := resolveChainTypeN(call.receiverChain, enclosingFunc, richAST, varTypes, 0)
+		// A package qualifier names a package-level function or constructor,
+		// not a method. Resolving it here rather than through the bare-name
+		// fallback below keeps the popup scoped to the package the user typed:
+		// the fallback matches a simple name across every loaded package in map
+		// order, so two packages exporting one name answer differently between
+		// requests.
+		if pkg, isPkg := strings.CutPrefix(receiverType, packagePrefix); isPkg {
+			switch m := lookupPackageMember(richAST, pkg, call.name); {
+			case m.Func != nil:
+				return functionSignature(call.name, m.Func)
+			case m.Type != nil && len(m.Type.FieldNames) > 0:
+				return typeConstructorSignature(call.name, m.Type)
+			}
+			// A case constructor, or nothing at all, falls through: the
+			// companion type the transpiler generates for a case is what
+			// answers for it below.
+		}
 		if receiverType != "" {
 			if tm := findType(richAST, receiverType); tm != nil {
 				if m, ok := tm.Methods[call.name]; ok {
