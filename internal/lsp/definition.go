@@ -252,6 +252,21 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 		}
 	}
 
+	// A package-level val/var, from the position the analyzer recorded — which
+	// reaches a binding declared in a sibling file of the same package, and is
+	// exact where the text scan below is a first-match-wins guess that lands on
+	// whichever function body happens to declare the name first.
+	//
+	// A function-scoped local shadows it, the same rule hover applies.
+	funcScope := findEnclosingFunc(strings.Split(text, "\n"), line)
+	if _, isLocal := lookupVarTypeScoped(varTypeMap, funcScope, word); !isLocal {
+		if pv, ok := richAST.PackageVals[word]; ok {
+			if loc := locationAt(pv.DefinedIn, pv.Pos, word); loc != nil {
+				return []lsp.Location{*loc}, nil
+			}
+		}
+	}
+
 	// Local definition search
 	loc := localDefinition(text, word, uri)
 	if loc != nil {

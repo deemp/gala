@@ -122,20 +122,31 @@ func (h *GalaHandler) InlayHint(ctx context.Context, params *lsp.InlayHintParams
 // lookupVarType looks up a variable type from the scoped varTypeMap.
 // Keys are stored as "funcName.varName" for function-local vars, or "varName" for top-level.
 func lookupVarType(varTypeMap map[string]string, funcName, varName string) string {
+	typStr, _ := lookupVarTypeScoped(varTypeMap, funcName, varName)
+	return typStr
+}
+
+// lookupVarTypeScoped additionally reports whether the hit came from the
+// function-scoped key — that is, whether the name is a local rather than a
+// package-level binding. Callers that must tell a local apart from a
+// same-named package val (hover, which documents only the latter) need the
+// distinction, and deriving it from a second lookup elsewhere would put the
+// "funcName.varName" key format in two places.
+func lookupVarTypeScoped(varTypeMap map[string]string, funcName, varName string) (string, bool) {
 	if varTypeMap == nil {
-		return ""
+		return "", false
 	}
 	// Try function-scoped lookup first
 	if funcName != "" {
 		if typStr, ok := varTypeMap[funcName+"."+varName]; ok {
-			return typStr
+			return typStr, true
 		}
 	}
 	// Fall back to unscoped lookup
 	if typStr, ok := varTypeMap[varName]; ok {
-		return typStr
+		return typStr, false
 	}
-	return ""
+	return "", false
 }
 
 func casePatternHints(line string, lineNum int, richAST *transpiler.RichAST) []lsp.InlayHint {

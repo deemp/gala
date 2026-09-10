@@ -23,10 +23,11 @@ import (
 
 // Kinds a completion reference can point at.
 const (
-	refKindType    = "type"
-	refKindFunc    = "func"
-	refKindMember  = "member"  // a method or field of Key
-	refKindVariant = "variant" // a sealed case of Key
+	refKindType       = "type"
+	refKindFunc       = "func"
+	refKindMember     = "member"  // a method or field of Key
+	refKindVariant    = "variant" // a sealed case of Key
+	refKindPackageVal = "packageval"
 )
 
 // completionRef identifies the symbol behind a completion item well enough to
@@ -165,6 +166,10 @@ func resolveRefDoc(richAST *transpiler.RichAST, ref completionRef) string {
 					return tm.SealedVariants[i].Doc
 				}
 			}
+		}
+	case refKindPackageVal:
+		if pv := richAST.PackageVals[ref.Key]; pv != nil {
+			return pv.Doc
 		}
 	}
 	return ""

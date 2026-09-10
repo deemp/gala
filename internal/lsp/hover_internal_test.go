@@ -144,7 +144,7 @@ func TestDeclarationAtPrefersCaseOverGeneratedCompanion(t *testing.T) {
 	}
 
 	for i := 0; i < 200; i++ {
-		got := declarationAt(rich, path, 2, 10, "Circle")
+		got := declarationAt(rich, nil, path, 2, 10, "Circle")
 		if !strings.Contains(got, "case Circle") {
 			t.Fatalf("iteration %d: case declaration resolved to the companion type\n--- got ---\n%s", i, got)
 		}
@@ -177,7 +177,7 @@ func TestDeclarationAtFindsMethodDeclaredInAnotherFile(t *testing.T) {
 		Functions: map[string]*transpiler.FunctionMetadata{},
 	}
 
-	got := declarationAt(rich, methodPath, 3, 21, "AsFixed")
+	got := declarationAt(rich, nil, methodPath, 3, 21, "AsFixed")
 	if !strings.Contains(got, "AsFixed pins the widget.") {
 		t.Errorf("method declared in another file than its type did not resolve\n--- got ---\n%s", got)
 	}

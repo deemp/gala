@@ -59,6 +59,7 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 		if richAST != nil {
 			items = append(items, typeCompletions(richAST)...)
 			items = append(items, functionCompletions(richAST)...)
+			items = append(items, packageValCompletions(richAST)...)
 		}
 		items = append(items, keywordCompletions()...)
 	}
@@ -151,6 +152,31 @@ func functionCompletions(richAST *transpiler.RichAST) []lsp.CompletionItem {
 			Kind:   kindPtr(lsp.CompletionItemKindFunction),
 			Detail: sig,
 		}, completionRef{Kind: refKindFunc, Key: fnKey}))
+	}
+	return items
+}
+
+// packageValCompletions offers the package's own val/var bindings.
+//
+// Unexported ones are included, unlike types and functions: this list is
+// offered inside the package that declares them, where a lowercase binding is
+// exactly as referenceable as an uppercase one.
+func packageValCompletions(richAST *transpiler.RichAST) []lsp.CompletionItem {
+	items := make([]lsp.CompletionItem, 0, len(richAST.PackageVals))
+	for name, pv := range richAST.PackageVals {
+		kind := "var"
+		if pv.IsVal {
+			kind = "val"
+		}
+		detail := kind + " " + name
+		if typeName := typeDisplayName(pv.Type); typeName != "" {
+			detail += " " + typeName
+		}
+		items = append(items, withRef(lsp.CompletionItem{
+			Label:  name,
+			Kind:   kindPtr(lsp.CompletionItemKindVariable),
+			Detail: detail,
+		}, completionRef{Kind: refKindPackageVal, Key: name}))
 	}
 	return items
 }

@@ -16,6 +16,79 @@ import (
 //            hasTupleTypePrefix, getTupleTypeFromName, getReceiverTypeArgs, getReceiverTypeArgStrings,
 //            exprToTypeString, substituteTranspilerTypeParams
 
+// arithmeticResultType types a binary arithmetic expression the way Go does:
+// when one operand is an untyped constant and the other is typed, the result
+// takes the TYPED operand's type.
+//
+// Taking the left operand unconditionally makes `15 * time.Second` an int
+// rather than a time.Duration. Go itself never sees that claim — the expression
+// is emitted verbatim and the Go compiler retypes it — but every consumer of
+// GALA's own inference does, which is why the IDE showed `val timeout: int` for
+// a duration.
+func (t *galaASTTransformer) arithmeticResultType(e *ast.BinaryExpr) transpiler.Type {
+	// An expression built purely from untyped constants has a default type of
+	// its own, and the repo already knows how the kinds combine: `1 * 1.5` is a
+	// float64, not the left operand's int.
+	if def, ok := untypedNumericConstDefault(e); ok {
+		return transpiler.BasicType{Name: def}
+	}
+	if gov := governingOperand(e); gov != e.X {
+		// Only accept a resolved answer. An unresolvable typed operand — a Go
+		// symbol with no SDK loaded, an interop method the analyzer could not
+		// type — is no reason to lose the untyped constant's concrete default
+		// and emit `any` in its place.
+		if typed := t.getExprTypeNameManual(gov); !transpiler.IsUnusableOrAny(typed) {
+			return typed
+		}
+	}
+	return t.getExprTypeNameManual(e.X)
+}
+
+// governingOperand returns the operand whose type a binary arithmetic
+// expression takes.
+//
+// Both inference paths (getExprTypeNameManual here, getExprType in types.go)
+// ask this one question so they cannot answer it differently; only the type
+// lookup they perform on the result differs.
+func governingOperand(e *ast.BinaryExpr) ast.Expr {
+	// Shifts are Go's exception: `x << n` has x's type whatever n is, so the
+	// shift count never governs.
+	if e.Op == token.SHL || e.Op == token.SHR {
+		return e.X
+	}
+	// An untyped constant takes the type of the typed operand; two untyped
+	// constants keep the left-hand answer, which is the untyped default.
+	if isUntypedConstExpr(e.X) && !isUntypedConstExpr(e.Y) {
+		return e.Y
+	}
+	return e.X
+}
+
+// isUntypedConstExpr reports whether expr is an untyped constant in Go's sense.
+//
+// The numeric cases are untypedNumericConstDefault's, which already encodes
+// constant arithmetic and the shift rule; strings are the one other untyped
+// kind an arithmetic operator accepts. Named constants are excluded either
+// way — their type is whatever their declaration says.
+func isUntypedConstExpr(expr ast.Expr) bool {
+	if _, ok := untypedNumericConstDefault(expr); ok {
+		return true
+	}
+	return isUntypedStringConst(expr)
+}
+
+func isUntypedStringConst(expr ast.Expr) bool {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		return e.Kind == token.STRING
+	case *ast.ParenExpr:
+		return isUntypedStringConst(e.X)
+	case *ast.BinaryExpr:
+		return e.Op == token.ADD && isUntypedStringConst(e.X) && isUntypedStringConst(e.Y)
+	}
+	return false
+}
+
 func (t *galaASTTransformer) getExprTypeNameManual(expr ast.Expr) transpiler.Type {
 	if expr == nil {
 		return transpiler.NilType{}
@@ -146,7 +219,7 @@ func (t *galaASTTransformer) getExprTypeNameManualUncached(expr ast.Expr) transp
 		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ, token.LAND, token.LOR:
 			return transpiler.BasicType{Name: "bool"}
 		default:
-			return t.getExprTypeNameManual(e.X)
+			return t.arithmeticResultType(e)
 		}
 	case *ast.SelectorExpr:
 		return t.inferSelectorExprType(e)

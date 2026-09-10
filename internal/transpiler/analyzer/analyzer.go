@@ -1523,7 +1523,6 @@ func (a *galaAnalyzer) Analyze(tree antlr.Tree, docs map[int]string, filePath st
 			if err := a.extractSiblingFullMetadata(sibTree, pkgName, richAST, sibPath, decls); err != nil {
 				return nil, err
 			}
-			a.extractPackageVals(sibTree, pkgName, richAST)
 		}
 	} else if pkgName != "main" && pkgName != "test" {
 		// Directory-discovered siblings: full metadata extraction (same as --package-files mode).
@@ -1537,7 +1536,6 @@ func (a *galaAnalyzer) Analyze(tree antlr.Tree, docs map[int]string, filePath st
 			if err := a.extractSiblingFullMetadata(sibTree, pkgName, richAST, sibPath, decls); err != nil {
 				return nil, err
 			}
-			a.extractPackageVals(sibTree, pkgName, richAST)
 		}
 	}
 
@@ -1595,7 +1593,7 @@ func (a *galaAnalyzer) Analyze(tree antlr.Tree, docs map[int]string, filePath st
 
 	// 2b. Record this file's package-level val/var declarations so cross-file
 	// references unwrap their std.Immutable[T] wrapper correctly.
-	a.extractPackageVals(sourceFile, pkgName, richAST)
+	a.extractPackageVals(sourceFile, pkgName, richAST, docs, absFilePath)
 
 	// 3. Discover companion objects - types with Unapply methods that can be used for pattern matching
 	a.discoverCompanionObjects(richAST)
@@ -4138,9 +4136,14 @@ func (a *galaAnalyzer) extractSiblingFullMetadata(sibTree *grammar.SourceFileCon
 			}
 		}
 	}
+
+	// The sibling's package-level bindings, recorded here rather than by the
+	// caller so they reuse the canonical path and docs map resolved above —
+	// docsForTree's own note explains why re-deriving them per sibling is worth
+	// avoiding.
+	a.extractPackageVals(sibTree, pkgName, richAST, docs, absSibPath)
 	return nil
 }
-
 
 // defaultExprSpan is the source span of a parameter's default expression,
 // captured while collecting metadata so a later validation error can point an
@@ -4254,7 +4257,8 @@ func validateDefaultParams(funcMeta *transpiler.FunctionMetadata, line, column i
 // unwrap itself only needs the val/var classification, so an unknown type still
 // produces correct code — it merely yields weaker downstream type inference for
 // that identifier.
-func (a *galaAnalyzer) extractPackageVals(sourceFile *grammar.SourceFileContext, pkgName string, richAST *transpiler.RichAST) {
+func (a *galaAnalyzer) extractPackageVals(sourceFile *grammar.SourceFileContext, pkgName string, richAST *transpiler.RichAST, docs map[int]string, filePath string) {
+	absFilePath, _ := filepath.Abs(filePath)
 	for _, topDecl := range sourceFile.AllTopLevelDeclaration() {
 		var (
 			idList   grammar.IIdentifierListContext
@@ -4304,16 +4308,27 @@ func (a *galaAnalyzer) extractPackageVals(sourceFile *grammar.SourceFileContext,
 			if richAST.PackageVals == nil {
 				richAST.PackageVals = make(map[string]*transpiler.PackageValMetadata)
 			}
-			// Prefer a known type: don't let a later (e.g. sibling) Nil entry
-			// clobber a precise one already recorded for the same name.
-			if existing, ok := richAST.PackageVals[name]; ok &&
-				!transpiler.IsUnusable(existing.Type) && transpiler.IsUnusable(valType) {
-				continue
+			entry, ok := richAST.PackageVals[name]
+			if !ok {
+				entry = &transpiler.PackageValMetadata{Name: name}
+				richAST.PackageVals[name] = entry
 			}
-			richAST.PackageVals[name] = &transpiler.PackageValMetadata{
-				Name:  name,
-				Type:  valType,
-				IsVal: isVal,
+			// Merged field-wise, because the pass that knows the type and the
+			// one that carries the prose need not be the same one: a re-analysis
+			// or a cache load may arrive with a nil docs map, and a sibling may
+			// re-declare a name whose type only one of them could resolve.
+			//
+			// Prefer a known type: don't let a later Nil entry clobber a precise
+			// one already recorded for the same name.
+			if transpiler.IsUnusable(entry.Type) || !transpiler.IsUnusable(valType) {
+				entry.Type, entry.IsVal = valType, isVal
+			}
+			// The doc is the declaration's, shared by every name it binds
+			// (`val a, b = 1, 2`), the way Go documents a grouped declaration.
+			// The position is the identifier's own.
+			setDoc(&entry.Doc, docs, topDecl.GetStart())
+			if entry.Pos.Line == 0 {
+				entry.Pos, entry.DefinedIn = transpiler.PosFromToken(idCtx.GetStart()), absFilePath
 			}
 		}
 	}
