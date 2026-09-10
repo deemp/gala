@@ -27,16 +27,18 @@ import (
 // a duration.
 func (t *galaASTTransformer) arithmeticResultType(e *ast.BinaryExpr) transpiler.Type {
 	// An expression built purely from untyped constants has a default type of
-	// its own, and the repo already knows how the kinds combine: `1 * 1.5` is a
-	// float64, not the left operand's int.
+	// its own, and untypedNumericConstDefault already knows how the kinds
+	// combine (`1 * 1.5` is a float64) and that a shift takes its LEFT
+	// operand's default whatever the count is (`1 << n` is an int).
 	if def, ok := untypedNumericConstDefault(e); ok {
 		return transpiler.BasicType{Name: def}
 	}
 	if gov := governingOperand(e); gov != e.X {
-		// Only accept a resolved answer. An unresolvable typed operand — a Go
-		// symbol with no SDK loaded, an interop method the analyzer could not
-		// type — is no reason to lose the untyped constant's concrete default
-		// and emit `any` in its place.
+		// Only accept a resolved answer. Leaving the expression unresolved when
+		// the typed operand cannot be typed would be a regression: before this
+		// rule existed the left operand always answered, and dropping to
+		// nothing would surface as `any` in the lambda return types getExprType
+		// feeds.
 		if typed := t.getExprTypeNameManual(gov); !transpiler.IsUnusableOrAny(typed) {
 			return typed
 		}
@@ -45,19 +47,12 @@ func (t *galaASTTransformer) arithmeticResultType(e *ast.BinaryExpr) transpiler.
 }
 
 // governingOperand returns the operand whose type a binary arithmetic
-// expression takes.
+// expression takes: the typed one, when the other is an untyped constant.
 //
-// Both inference paths (getExprTypeNameManual here, getExprType in types.go)
-// ask this one question so they cannot answer it differently; only the type
-// lookup they perform on the result differs.
+// Shifts need no case here. `x << n` takes x's type whatever n is, and the only
+// shape where that could differ — an untyped constant shifted by something — is
+// answered by untypedNumericConstDefault before this is reached.
 func governingOperand(e *ast.BinaryExpr) ast.Expr {
-	// Shifts are Go's exception: `x << n` has x's type whatever n is, so the
-	// shift count never governs.
-	if e.Op == token.SHL || e.Op == token.SHR {
-		return e.X
-	}
-	// An untyped constant takes the type of the typed operand; two untyped
-	// constants keep the left-hand answer, which is the untyped default.
 	if isUntypedConstExpr(e.X) && !isUntypedConstExpr(e.Y) {
 		return e.Y
 	}

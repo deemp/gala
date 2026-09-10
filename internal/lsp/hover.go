@@ -70,7 +70,7 @@ func (h *GalaHandler) hoverInfo(text, path string, richAST *transpiler.RichAST, 
 	// case, or a type. Resolved by position against the metadata the analyzer
 	// already recorded rather than by re-reading the source — the same anchor
 	// go-to-definition uses.
-	if info := declarationAt(richAST, varTypes, path, line, char, word); info != "" {
+	if info := declarationAt(richAST, path, line, char, word); info != "" {
 		return info
 	}
 
@@ -97,14 +97,15 @@ func (h *GalaHandler) hoverInfo(text, path string, richAST *transpiler.RichAST, 
 
 	// A package-level binding, on the other hand, is a documented symbol of its
 	// package: the analyzer records its doc comment and whether it is a val or
-	// a var, so hover states both rather than guessing. A same-named local
-	// shadows it — a function-scoped hit means the cursor is on the local.
+	// a var, so hover states both rather than guessing.
 	//
-	// It also wins over the by-name search at the end of this function: a
-	// package val and a type may share a name, and the binding is what a
-	// reference to it means.
-	if pv, ok := richAST.PackageVals[word]; ok && !isLocal {
-		return packageValHover(richAST, pv, typStr)
+	// It wins over the by-name search at the end of this function: a package val
+	// and a type may share a name, and the binding is what a reference to it
+	// means.
+	if pv := packageValAt(richAST, word, path, line, char, isLocal); pv != nil {
+		// The bare key is the binding's own type; locals are keyed
+		// "funcName.varName", and typStr may be a shadowing local's.
+		return packageValHover(richAST, pv, lookupVarType(varTypes, "", word))
 	}
 
 	if typStr != "" {
@@ -126,7 +127,7 @@ func (h *GalaHandler) hoverInfo(text, path string, richAST *transpiler.RichAST, 
 // bodies, comments, string literals) and the transpiler has already resolved
 // them exactly. SourcePos is 1-based line, 0-based column, matching
 // definition.go's locationAt.
-func declarationAt(richAST *transpiler.RichAST, varTypes map[string]string, path string, line, char int, word string) string {
+func declarationAt(richAST *transpiler.RichAST, path string, line, char int, word string) string {
 	if path == "" {
 		return ""
 	}
@@ -177,17 +178,8 @@ func declarationAt(richAST *transpiler.RichAST, varTypes map[string]string, path
 			return formatFuncMeta(fm)
 		}
 	}
-	// A package-level binding, resolved by position like every other
-	// declaration. Position rather than scope matters here: findEnclosingFunc
-	// scans backwards for a `func` line without tracking where its body ends,
-	// so a binding declared BELOW a function reads as a local of it, and the
-	// scope-based branch would hand the cursor that function's local instead.
-	if pv, ok := richAST.PackageVals[word]; ok &&
-		sameSourceFile(pv.DefinedIn, path) && posCovers(pv.Pos, line, char, word) {
-		// The bare key is the package-level binding's own type: locals are
-		// recorded under "funcName.varName".
-		return packageValHover(richAST, pv, varTypes[word])
-	}
+	// Package-level bindings are answered by packageValAt, below: their
+	// declaration and their references resolve through one guard.
 	return ""
 }
 
@@ -472,6 +464,29 @@ func variantSignature(v *transpiler.SealedVariant) string {
 	return fmt.Sprintf("case %s(%s)", v.Name, strings.Join(fields, ", "))
 }
 
+// packageValAt returns the package-level binding named by word when the cursor
+// refers to it, and nil when there is none or a local shadows it.
+//
+// isLocal is lookupVarTypeScoped's second result: the type channel keys locals
+// as "funcName.varName" and package-level bindings by the bare name, so a
+// function-scoped hit means the cursor is on a local — except when it is on the
+// binding's own declaration. Scope there is decided by findEnclosingFunc, which
+// scans backwards for a `func` line without tracking where its body ends, so a
+// binding declared BELOW a function reads as a local of it; the recorded
+// declaration position is exact and overrules that guess.
+//
+// Hover and go-to-definition both ask this, and the rule belongs in one place.
+func packageValAt(richAST *transpiler.RichAST, word, path string, line, char int, isLocal bool) *transpiler.PackageValMetadata {
+	pv, ok := richAST.PackageVals[word]
+	if !ok {
+		return nil
+	}
+	if !isLocal || (sameSourceFile(pv.DefinedIn, path) && posCovers(pv.Pos, line, char, word)) {
+		return pv
+	}
+	return nil
+}
+
 // packageValHover renders a package-level val/var: its mutability, name, type
 // and doc comment.
 //
@@ -481,10 +496,32 @@ func variantSignature(v *transpiler.SealedVariant) string {
 // channel. Mutability comes from real metadata (IsVal), which is why this can
 // state `val`/`var` where localHover deliberately does not.
 func packageValHover(richAST *transpiler.RichAST, pv *transpiler.PackageValMetadata, resolvedType string) string {
-	typeName := resolvedType
+	// The analyzer's own record first. It holds a type only for a literal
+	// initializer or an explicit annotation — both exact, and both tied to this
+	// declaration — where the channel is keyed by bare name and a local
+	// declared in a top-level lambda body shares that key. The channel answers
+	// everything else, which is most bindings.
+	typeName := packageValType(pv)
 	if typeName == "" {
-		typeName = typeDisplayName(pv.Type)
+		typeName = resolvedType
 	}
+	return renderHover(packageValSignature(pv, typeName), pv.Doc, richAST.PackageName) +
+		typeDocSuffix(richAST, typeName)
+}
+
+// packageValType renders the analyzer's recorded type for display. Rendered the
+// way the var channel renders its own — type arguments intact — so a hover does
+// not say `HashMap` or `HashMap[String, Int]` depending on which of the two
+// supplied the type.
+func packageValType(pv *transpiler.PackageValMetadata) string {
+	if transpiler.IsUnusable(pv.Type) {
+		return ""
+	}
+	return cleanGoTypeForDisplay(pv.Type.String())
+}
+
+// packageValSignature is the one-line form shared by hover and completion.
+func packageValSignature(pv *transpiler.PackageValMetadata, typeName string) string {
 	kind := "var"
 	if pv.IsVal {
 		kind = "val"
@@ -493,12 +530,18 @@ func packageValHover(richAST *transpiler.RichAST, pv *transpiler.PackageValMetad
 	if typeName != "" {
 		sig += " " + typeName
 	}
-	return renderHover(sig, pv.Doc, richAST.PackageName) + typeDocSuffix(richAST, typeName)
+	return sig
 }
 
 // typeDocSuffix offers the type's own documentation below a binding, attributed
 // so it does not read as documentation of the binding itself.
 func typeDocSuffix(richAST *transpiler.RichAST, typStr string) string {
+	// findType falls back to a scan of every loaded type, so the cases that
+	// cannot match — no type at all, or a Go primitive, which is never a GALA
+	// type with documentation — are answered before it is asked.
+	if typStr == "" || transpiler.IsPrimitiveType(stripTypeParams(typStr)) {
+		return ""
+	}
 	tm := findType(richAST, stripTypeParams(typStr))
 	if tm == nil || tm.Doc == "" {
 		return ""

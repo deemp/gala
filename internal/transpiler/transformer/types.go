@@ -249,14 +249,17 @@ func (t *galaASTTransformer) getExprType(expr ast.Expr) ast.Expr {
 		case token.LOR, token.LAND, token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
 			return ast.NewIdent("bool")
 		default:
-			// The governing operand answers only when it resolves: this
-			// function falls back to `any`, and `2 * vals.Len()` must not
-			// become `any` merely because the call could not be typed — the
-			// untyped constant's own default is concrete and correct.
-			if gov := governingOperand(e); gov != e.X {
-				if typed := t.getExprType(gov); !isAnyIdent(typed) {
-					return typed
-				}
+			// Delegated rather than restated: arithmeticResultType owns the
+			// whole rule — governing operand, the shift exception, and the
+			// default of an all-constant expression — and a second spelling
+			// here answered `1 * 1.5` with int where that one says float64.
+			//
+			// A result still carrying type parameters is rejected on the same
+			// terms getExprTypeName rejects one: it is a manual answer, and
+			// `b.Get() * 2` on a Box[T] must reach Hindley-Milner for T to be
+			// substituted rather than be emitted as T.
+			if typ := t.arithmeticResultType(e); !transpiler.IsUnusableOrAny(typ) && !t.hasTypeParams(typ) {
+				return t.typeToExpr(typ)
 			}
 			return t.getExprType(e.X)
 		}
@@ -270,13 +273,6 @@ func (t *galaASTTransformer) getExprType(expr ast.Expr) ast.Expr {
 		return t.typeToExpr(typ)
 	}
 	return ast.NewIdent("any")
-}
-
-// isAnyIdent reports whether a rendered type expression is the bare `any` that
-// getExprType returns when it cannot resolve anything better.
-func isAnyIdent(expr ast.Expr) bool {
-	id, ok := expr.(*ast.Ident)
-	return ok && id.Name == "any"
 }
 
 // isPrimitiveType is an alias for transpiler.IsPrimitiveType for local use.

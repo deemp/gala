@@ -139,6 +139,15 @@ func lookupVarTypeScoped(varTypeMap map[string]string, funcName, varName string)
 	// Try function-scoped lookup first
 	if funcName != "" {
 		if typStr, ok := varTypeMap[funcName+"."+varName]; ok {
+			if typStr != "" {
+				return typStr, true
+			}
+			// A binding recorded with no type still answers "this name is a
+			// local" — but it must not answer "and its type is nothing", or a
+			// top-level declaration would lose its hint to a same-named local
+			// whose type failed to resolve. The unscoped entry, if any, is the
+			// best type available; the local verdict stands either way.
+			typStr, _ := varTypeMap[varName]
 			return typStr, true
 		}
 	}
@@ -216,4 +225,21 @@ func makeTypeHint(line, col int, typeName string) lsp.InlayHint {
 		Kind:         &kind,
 		PaddingRight: &paddingRight,
 	}
+}
+
+// hasResolvedVarType reports whether the channel carries at least one type that
+// actually resolved.
+//
+// The transformer also records bindings whose type it could not infer, so that
+// the LSP can tell a local from a package-level val (see recordLSPVarType).
+// Those entries render as the empty string, and a map holding only them means
+// analysis produced no type information — which is what the callers of this are
+// really asking.
+func hasResolvedVarType(varTypeMap map[string]string) bool {
+	for _, typStr := range varTypeMap {
+		if typStr != "" {
+			return true
+		}
+	}
+	return false
 }

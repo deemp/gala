@@ -40,12 +40,14 @@ func TestIsUntypedConstExpr(t *testing.T) {
 	}
 }
 
-// Shifts are Go's exception: `x << n` has x's type whatever n is, so the
-// untyped-constant rule must not hand the result the shift count's type.
+// A shift takes its LEFT operand's type whatever the count is: `1 << n` is an
+// int, not whatever integer type n happens to be. The count here is a variable,
+// which is the only shape where the wrong rule could show — a constant count
+// would make the whole expression constant and settle it that way regardless.
 func TestShiftKeepsLeftOperandType(t *testing.T) {
-	tr := &galaASTTransformer{exprTypeCache: map[ast.Expr]transpiler.Type{}}
+	tr := NewGalaASTTransformer().(*galaASTTransformer)
 	lit := &ast.BasicLit{Kind: token.INT, Value: "1"}
-	count := &ast.BasicLit{Kind: token.CHAR, Value: "'a'"} // a typed-ish operand
+	count := ast.NewIdent("n")
 
 	for _, op := range []token.Token{token.SHL, token.SHR} {
 		got := tr.arithmeticResultType(&ast.BinaryExpr{X: lit, Op: op, Y: count})

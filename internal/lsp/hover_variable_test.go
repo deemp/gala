@@ -72,7 +72,7 @@ func TestHoverPackageLevelBinding(t *testing.T) {
 		{
 			name:   "a local of the same name is not the package binding",
 			anchor: "    val label = 42", word: "label",
-			want:    []string{"label"},
+			want:    []string{"label int"},
 			notWant: []string{"names this node in logs"},
 		},
 	} {
@@ -107,14 +107,14 @@ func TestDefinitionPackageLevelBinding(t *testing.T) {
 // A binding declared in a sibling file of the same package resolves too — the
 // text scan of the open document could never see it.
 func TestDefinitionPackageLevelBindingAcrossFiles(t *testing.T) {
+	const src = "package app\n\nfunc Run() {\n    Println(maxConns)\n}\n"
 	dir := createTestProject(t, []testProjectFile{
 		{Name: "config.gala", Src: "package app\n\n// maxConns caps concurrent connections.\nval maxConns = 64\n"},
-		{Name: "server.gala", Src: "package app\n\nfunc Run() {\n    Println(maxConns)\n}\n"},
+		{Name: "server.gala", Src: src},
 	})
 	h := newHarness(t)
 	openProjectFile(t, h, dir, "config.gala")
 	uri := openProjectFile(t, h, dir, "server.gala")
-	src := "package app\n\nfunc Run() {\n    Println(maxConns)\n}\n"
 	settle(t, h, uri, src, "func Run()", "Run")
 
 	line, col := locate(t, src, "Println(maxConns)", "maxConns")

@@ -4257,8 +4257,7 @@ func validateDefaultParams(funcMeta *transpiler.FunctionMetadata, line, column i
 // unwrap itself only needs the val/var classification, so an unknown type still
 // produces correct code — it merely yields weaker downstream type inference for
 // that identifier.
-func (a *galaAnalyzer) extractPackageVals(sourceFile *grammar.SourceFileContext, pkgName string, richAST *transpiler.RichAST, docs map[int]string, filePath string) {
-	absFilePath, _ := filepath.Abs(filePath)
+func (a *galaAnalyzer) extractPackageVals(sourceFile *grammar.SourceFileContext, pkgName string, richAST *transpiler.RichAST, docs map[int]string, absFilePath string) {
 	for _, topDecl := range sourceFile.AllTopLevelDeclaration() {
 		var (
 			idList   grammar.IIdentifierListContext
@@ -4308,27 +4307,26 @@ func (a *galaAnalyzer) extractPackageVals(sourceFile *grammar.SourceFileContext,
 			if richAST.PackageVals == nil {
 				richAST.PackageVals = make(map[string]*transpiler.PackageValMetadata)
 			}
-			entry, ok := richAST.PackageVals[name]
-			if !ok {
-				entry = &transpiler.PackageValMetadata{Name: name}
-				richAST.PackageVals[name] = entry
+			// Prefer a known type: don't let a later (e.g. sibling) Nil entry
+			// clobber a precise one already recorded for the same name.
+			if existing, ok := richAST.PackageVals[name]; ok &&
+				!transpiler.IsUnusable(existing.Type) && transpiler.IsUnusable(valType) {
+				continue
 			}
-			// Merged field-wise, because the pass that knows the type and the
-			// one that carries the prose need not be the same one: a re-analysis
-			// or a cache load may arrive with a nil docs map, and a sibling may
-			// re-declare a name whose type only one of them could resolve.
+			// Doc, position and file are written together with the type, as one
+			// declaration's description: merging them field-wise across passes
+			// would pair one file's prose with another's location.
 			//
-			// Prefer a known type: don't let a later Nil entry clobber a precise
-			// one already recorded for the same name.
-			if transpiler.IsUnusable(entry.Type) || !transpiler.IsUnusable(valType) {
-				entry.Type, entry.IsVal = valType, isVal
-			}
 			// The doc is the declaration's, shared by every name it binds
-			// (`val a, b = 1, 2`), the way Go documents a grouped declaration.
-			// The position is the identifier's own.
-			setDoc(&entry.Doc, docs, topDecl.GetStart())
-			if entry.Pos.Line == 0 {
-				entry.Pos, entry.DefinedIn = transpiler.PosFromToken(idCtx.GetStart()), absFilePath
+			// (`val a, b = 1, 2`), the way Go documents a grouped declaration;
+			// the position is each identifier's own.
+			richAST.PackageVals[name] = &transpiler.PackageValMetadata{
+				Name:      name,
+				Type:      valType,
+				IsVal:     isVal,
+				Doc:       docAt(docs, topDecl.GetStart()),
+				Pos:       transpiler.PosFromToken(idCtx.GetStart()),
+				DefinedIn: absFilePath,
 			}
 		}
 	}

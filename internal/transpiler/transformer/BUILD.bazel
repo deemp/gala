@@ -68,6 +68,7 @@ go_test(
         "auto_method_override_test.go",
         "bare_funcref_test.go",
         "bare_variant_pattern_test.go",
+        "binary_codegen_test.go",
         "binary_type_test.go",
         "bind_test.go",
         "chained_flatmap_test.go",

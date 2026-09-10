@@ -497,7 +497,7 @@ func (h *GalaHandler) tryAnalyzePartial(uri, filePath string, tree antlr.Tree, d
 // entire file.
 func (h *GalaHandler) ensureAnalysis(uri string, line, char int) {
 	h.mu.Lock()
-	hasVarTypes := len(h.varTypes[uri]) > 0
+	hasVarTypes := hasResolvedVarType(h.varTypes[uri])
 	if h.richASTs[uri] != nil && hasVarTypes {
 		h.mu.Unlock()
 		return
@@ -547,7 +547,7 @@ func (h *GalaHandler) ensureAnalysis(uri string, line, char int) {
 // the normal parse + analyze pipeline and cache the result.
 func (h *GalaHandler) ensureAnalysisForSignature(uri string, line, char int) {
 	h.mu.Lock()
-	hasVarTypes := len(h.varTypes[uri]) > 0
+	hasVarTypes := hasResolvedVarType(h.varTypes[uri])
 	if h.richASTs[uri] != nil && hasVarTypes {
 		h.mu.Unlock()
 		return
