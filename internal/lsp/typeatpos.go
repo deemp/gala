@@ -26,6 +26,11 @@ func findEnclosingFunc(lines []string, targetLine int) string {
 // either the prior line ends with a continuation token (`.`, `(`, `,`, `=`, `=>`, etc.)
 // or the accumulated text has more closing than opening parens (meaning the
 // opening paren lives on an earlier line).
+//
+// Comments are code to nobody: an ordinary sentence ends in `.`, so joining a
+// preceding comment line would make every statement that follows one look like
+// the tail of a member access. A comment-only line is skipped rather than
+// treated as a terminator, so a chain may be annotated between its links.
 func flattenLogicalLine(lines []string, line, char int) string {
 	if line >= len(lines) {
 		return ""
@@ -39,7 +44,15 @@ func flattenLogicalLine(lines []string, line, char int) string {
 	// on every iteration (O(n²) → O(n) over a multi-line chain).
 	net := netParens(cur)
 	for prev := line - 1; prev >= 0; prev-- {
-		prevTrimmed := strings.TrimRight(lines[prev], " \t")
+		prevTrimmed := strings.TrimRight(stripLineComment(lines[prev]), " \t")
+		if prevTrimmed == "" {
+			// Nothing but a comment: keep looking upwards. A genuinely blank
+			// line ends the walk, as does anything that is not a continuation.
+			if strings.TrimSpace(lines[prev]) != "" {
+				continue
+			}
+			break
+		}
 		if !shouldJoinPrev(prevTrimmed, net) {
 			break
 		}
@@ -47,6 +60,50 @@ func flattenLogicalLine(lines []string, line, char int) string {
 		net += netParens(prevTrimmed)
 	}
 	return cur
+}
+
+// stripLineComment drops a trailing `// ...` comment. A `//` inside a string
+// literal is not a comment — "http://example.com" must survive intact.
+func stripLineComment(s string) string {
+	inStr := false
+	for i := 0; i < len(s); i++ {
+		switch {
+		case inStr:
+			if s[i] == '\\' {
+				i++
+			} else if s[i] == '"' {
+				inStr = false
+			}
+		case s[i] == '"':
+			inStr = true
+		case s[i] == '/' && i+1 < len(s) && s[i+1] == '/':
+			return s[:i]
+		}
+	}
+	return s
+}
+
+// memberAccessPrefix returns the flattened expression that precedes the dot
+// selecting the identifier at (line, char), and reports whether the cursor is
+// on such a member access at all.
+//
+// One predicate for every caller: definition's package-member handler reads the
+// qualifier off the prefix, and its fall-through guard asks only whether there
+// was a dot. A line-local check answers "no" for a builder chain — whose
+// selecting dot trails the PREVIOUS line — and the guard then lets the global
+// by-name scans jump to whichever type happens to declare a same-named method.
+func memberAccessPrefix(lines []string, line, char int) (string, bool) {
+	if line < 0 || line >= len(lines) {
+		return "", false
+	}
+	l := lines[line]
+	if char > len(l) {
+		char = len(l)
+	}
+	for char > 0 && isIdentChar(l[char-1]) {
+		char--
+	}
+	return strings.CutSuffix(strings.TrimRight(flattenLogicalLine(lines, line, char), " \t"), ".")
 }
 
 func shouldJoinPrev(prevTrimmed string, curNetParens int) bool {
@@ -157,7 +214,7 @@ func typeAtDot(text string, line, char int, richAST *transpiler.RichAST, varType
 				// Resolve the chain: find the receiver type, then get the method's return type
 				receiverType := resolveChainTypeN(l[:i], enclosingFunc, richAST, varTypes, 0)
 				if receiverType != "" {
-					return resolveMethodReturn(richAST, receiverType, name)
+					return resolveMemberType(richAST, receiverType, name)
 				}
 				// Fallback: try resolving name directly
 				return resolveReceiverType(name, enclosingFunc, richAST, varTypes)
@@ -182,7 +239,7 @@ func typeAtDot(text string, line, char int, richAST *transpiler.RichAST, varType
 	if i >= 0 && l[i] == '.' {
 		receiverType := resolveChainTypeN(l[:i], enclosingFunc, richAST, varTypes, 0)
 		if receiverType != "" {
-			fieldType := resolveMethodReturn(richAST, receiverType, receiverName)
+			fieldType := resolveMemberType(richAST, receiverType, receiverName)
 			if fieldType != "" {
 				return fieldType
 			}
@@ -205,8 +262,8 @@ func resolveReceiverType(name, funcScope string, richAST *transpiler.RichAST, va
 
 	// 2. Check if it's a function call return type (try bare name and package-qualified)
 	if fm := findFunction(richAST, name); fm != nil {
-		if fm.ReturnType != nil && !fm.ReturnType.IsNil() {
-			return stripTypeParams(cleanGoTypeForDisplay(fm.ReturnType.String()))
+		if ret := typeDisplayName(fm.ReturnType); ret != "" {
+			return ret
 		}
 	}
 
@@ -300,7 +357,7 @@ func resolveChainTypeN(text string, funcScope string, richAST *transpiler.RichAS
 		if dotIdx >= 0 && text[dotIdx] == '.' {
 			receiverType := resolveChainTypeN(text[:dotIdx], funcScope, richAST, varTypes, depth+1)
 			if receiverType != "" {
-				return resolveMethodReturn(richAST, receiverType, methodName)
+				return resolveMemberType(richAST, receiverType, methodName)
 			}
 		}
 		// No dot — standalone call or variable
@@ -324,7 +381,7 @@ func resolveChainTypeN(text string, funcScope string, richAST *transpiler.RichAS
 		receiverType := resolveChainTypeN(text[:dotIdx], funcScope, richAST, varTypes, depth+1)
 		if receiverType != "" {
 			// Could be a field access — resolve field type
-			return resolveMethodReturn(richAST, receiverType, name)
+			return resolveMemberType(richAST, receiverType, name)
 		}
 	}
 
@@ -379,8 +436,18 @@ func isGoSizeableType(typeName string) bool {
 		typeName == "map" || strings.HasPrefix(typeName, "map[")
 }
 
-// resolveMethodReturn finds the return type of a method on a given type.
-func resolveMethodReturn(richAST *transpiler.RichAST, typeName, methodName string) string {
+// resolveMemberType names the type that `receiver.member` produces, where
+// receiver is either a type name or a packagePrefix-marked package qualifier.
+// It is the single join where a resolved receiver meets a member name, reached
+// from both typeAtDot and resolveChainTypeN.
+func resolveMemberType(richAST *transpiler.RichAST, typeName, methodName string) string {
+	// A package qualifier is not a receiver type: the member on it is a
+	// package-level function or constructor, not a method, and the head of
+	// every `pkg.New().WithX(...)` builder chain arrives here in that form.
+	if pkg, isPkg := strings.CutPrefix(typeName, packagePrefix); isPkg {
+		return resolvePackageMemberType(richAST, pkg, methodName)
+	}
+
 	// GALA's `.Size()` / `.ByteSize()` sugar resolves to int on Go primitive
 	// receivers (string/slice/map) that have no GALA TypeMetadata; check it
 	// before findType so the magic methods type-resolve like the transpiler.
@@ -392,12 +459,104 @@ func resolveMethodReturn(richAST *transpiler.RichAST, typeName, methodName strin
 		return ""
 	}
 	if m, ok := tm.Methods[methodName]; ok {
-		if m.ReturnType != nil && !m.ReturnType.IsNil() {
-			return stripTypeParams(cleanGoTypeForDisplay(m.ReturnType.String()))
+		if ret := typeDisplayName(m.ReturnType); ret != "" {
+			return ret
 		}
 	}
 	if ft, ok := tm.Fields[methodName]; ok {
-		return stripTypeParams(cleanGoTypeForDisplay(ft.String()))
+		return typeDisplayName(ft)
+	}
+	return ""
+}
+
+// packageMember is what `pkg.Name` names: at most one field is set.
+type packageMember struct {
+	Variant *transpiler.SealedVariant
+	Parent  *transpiler.TypeMetadata // the sealed type Variant belongs to
+	Type    *transpiler.TypeMetadata
+	Func    *transpiler.FunctionMetadata
+}
+
+// lookupPackageMember resolves `pkg.Name` to the symbol it denotes. Hover
+// renders the result; the chain walker takes the type it produces. One lookup
+// for both, so a qualified name cannot mean one thing in a popup and another to
+// the resolver behind it.
+//
+// Every step is keyed on pkg. The by-simple-name fallbacks in findType,
+// findFunction and findSealedVariant match across every loaded package in map
+// order, so `mypkg.Some` would answer with std's Some — the precise wrong
+// answer the qualifier exists to prevent, and one that changes between calls.
+//
+// Cases come first. The analyzer registers a companion TypeMetadata under each
+// sealed case's own name, carrying the generated Apply and Unapply, so a keyed
+// type lookup would shadow the case the user actually wrote and turn
+// `pkg.Some(x)` from an Option into a Some.
+func lookupPackageMember(richAST *transpiler.RichAST, pkg, name string) packageMember {
+	if v, parent := packageSealedVariant(richAST, pkg, name); v != nil {
+		return packageMember{Variant: v, Parent: parent}
+	}
+	if tm := packageType(richAST, pkg, name); tm != nil {
+		return packageMember{Type: tm}
+	}
+	if fm := packageFunction(richAST, pkg, name); fm != nil {
+		return packageMember{Func: fm}
+	}
+	return packageMember{}
+}
+
+// packageType and packageFunction look a declaration up by owning package and
+// simple name. The analyzer keys both tables "pkg.Name", except for the main
+// and test packages, which it keys bare — hence the second lookup, guarded by
+// the entry's own Package so it cannot answer for a different one.
+func packageType(richAST *transpiler.RichAST, pkg, name string) *transpiler.TypeMetadata {
+	if tm, ok := richAST.Types[pkg+"."+name]; ok && tm != nil {
+		return tm
+	}
+	if tm, ok := richAST.Types[name]; ok && tm != nil && tm.Package == pkg {
+		return tm
+	}
+	return nil
+}
+
+func packageFunction(richAST *transpiler.RichAST, pkg, name string) *transpiler.FunctionMetadata {
+	if fm, ok := richAST.Functions[pkg+"."+name]; ok && fm != nil {
+		return fm
+	}
+	if fm, ok := richAST.Functions[name]; ok && fm != nil && fm.Package == pkg {
+		return fm
+	}
+	return nil
+}
+
+// packageSealedVariant finds a `case` declared by a sealed type in pkg.
+//
+// Unlike findSealedVariant this needs no sorted iteration: a case name is
+// unique within its package (the generated companion type makes a duplicate a
+// redefinition error), so map order cannot change the answer.
+func packageSealedVariant(richAST *transpiler.RichAST, pkg, name string) (*transpiler.SealedVariant, *transpiler.TypeMetadata) {
+	for _, tm := range richAST.Types {
+		if tm == nil || !tm.IsSealed || tm.Package != pkg {
+			continue
+		}
+		for i := range tm.SealedVariants {
+			if tm.SealedVariants[i].Name == name {
+				return &tm.SealedVariants[i], tm
+			}
+		}
+	}
+	return nil, nil
+}
+
+// resolvePackageMemberType names the type that `pkg.Name(...)` produces.
+func resolvePackageMemberType(richAST *transpiler.RichAST, pkg, name string) string {
+	m := lookupPackageMember(richAST, pkg, name)
+	switch {
+	case m.Variant != nil:
+		return m.Parent.Name
+	case m.Type != nil:
+		return m.Type.Name
+	case m.Func != nil:
+		return typeDisplayName(m.Func.ReturnType)
 	}
 	return ""
 }

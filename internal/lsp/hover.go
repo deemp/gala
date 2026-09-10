@@ -176,25 +176,18 @@ func posCovers(pos transpiler.SourcePos, line, char int, name string) bool {
 }
 
 // packageMemberHover renders a symbol accessed through a package qualifier.
+// The lookup is shared with the chain resolver (see lookupPackageMember), so a
+// qualified name cannot mean one thing here and another to the resolver that
+// answers for the rest of the expression.
 func packageMemberHover(richAST *transpiler.RichAST, pkg, name string) string {
-	qualified := pkg + "." + name
-	// Scoped to pkg: an unscoped variant search here would answer `mypkg.Some`
-	// with std's Some, defeating the qualifier the user typed.
-	if variant, parent := findSealedVariant(richAST, name, pkg); variant != nil && parent != nil && parent.Package == pkg {
-		return formatVariant(variant, parent)
-	}
-	// findType falls back to a simple-name match across every package, in map
-	// order, so it must be re-checked against pkg: otherwise `mypkg.Some`, where
-	// mypkg has no Some, renders std's Some — the precise wrong answer the
-	// qualifier exists to prevent — and varies between hovers when two packages
-	// share a type name.
-	if tm := findType(richAST, qualified); tm != nil && tm.Package == pkg {
-		return formatTypeMeta(tm)
-	}
-	// findFunction is safe unchecked: a qualified name never matches its
-	// simple-name loop.
-	if fm := findFunction(richAST, qualified); fm != nil {
-		return formatFuncMeta(fm)
+	m := lookupPackageMember(richAST, pkg, name)
+	switch {
+	case m.Variant != nil:
+		return formatVariant(m.Variant, m.Parent)
+	case m.Type != nil:
+		return formatTypeMeta(m.Type)
+	case m.Func != nil:
+		return formatFuncMeta(m.Func)
 	}
 	return ""
 }

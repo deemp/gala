@@ -37,7 +37,7 @@ func TestKeywordCompletions_NoForbiddenBuiltins(t *testing.T) {
 // TestResolveMethodReturn_SizeSugar verifies that GALA's `.Size()` / `.ByteSize()`
 // magic methods on Go primitive receivers (string, slice, map) type-resolve to
 // int in the LSP, mirroring the transpiler's tryTransformSizeSugar. These
-// receivers have no GALA TypeMetadata, so resolveMethodReturn must special-case
+// receivers have no GALA TypeMetadata, so resolveMemberType must special-case
 // them before the findType lookup.
 func TestResolveMethodReturn_SizeSugar(t *testing.T) {
 	// Empty RichAST: string/slice/map are Go primitives, never GALA types, so
@@ -67,9 +67,9 @@ func TestResolveMethodReturn_SizeSugar(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveMethodReturn(richAST, tt.typeName, tt.method)
+			got := resolveMemberType(richAST, tt.typeName, tt.method)
 			if got != tt.want {
-				t.Errorf("resolveMethodReturn(%q, %q) = %q, want %q",
+				t.Errorf("resolveMemberType(%q, %q) = %q, want %q",
 					tt.typeName, tt.method, got, tt.want)
 			}
 		})

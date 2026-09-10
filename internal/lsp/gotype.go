@@ -1,6 +1,10 @@
 package lsp
 
-import "strings"
+import (
+	"strings"
+
+	"martianoff/gala/internal/transpiler"
+)
 
 // stripTypeParams removes generic type parameters: "Option[int]" → "Option".
 func stripTypeParams(s string) string {
@@ -24,4 +28,13 @@ func cleanGoTypeForDisplay(typeStr string) string {
 	}
 
 	return result
+}
+
+// typeDisplayName renders a declared type as the bare name the resolvers key
+// on, or "" when the declaration has none.
+func typeDisplayName(t transpiler.Type) string {
+	if t == nil || t.IsNil() {
+		return ""
+	}
+	return stripTypeParams(cleanGoTypeForDisplay(t.String()))
 }

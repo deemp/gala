@@ -44,28 +44,14 @@ func main() {
 }
 `
 
-// hoverAt hovers on `word` inside the first line containing `anchor`.
+// hoverAt hovers on `word` inside the first line of src containing `anchor`.
 //
 // Anchors rather than line numbers: hardcoded line numbers silently drift as the
 // fixture is edited, and a stale one either panics or, worse, quietly hovers
 // somewhere else and still passes.
-func hoverAt(t *testing.T, h hoverHarness, uri lsp.DocumentURI, anchor, word string) string {
+func hoverAt(t *testing.T, h hoverHarness, uri lsp.DocumentURI, src, anchor, word string) string {
 	t.Helper()
-	line, ai := -1, -1
-	for i, l := range strings.Split(hoverSrc, "\n") {
-		if idx := strings.Index(l, anchor); idx >= 0 {
-			line, ai = i, idx
-			break
-		}
-	}
-	if line < 0 {
-		t.Fatalf("anchor %q not found in fixture", anchor)
-	}
-	wi := strings.Index(anchor, word)
-	if wi < 0 {
-		t.Fatalf("word %q not inside anchor %q", word, anchor)
-	}
-	col := ai + wi + 1
+	line, col := locate(t, src, anchor, word)
 
 	hv, err := h.Hover(uri, line, col)
 	if err != nil {
@@ -125,15 +111,7 @@ func TestHoverCoverage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := hoverAt(t, h, uri, tt.anchor, tt.word)
-			if got == "" {
-				t.Fatalf("hover returned nothing")
-			}
-			for _, want := range tt.want {
-				if !strings.Contains(got, want) {
-					t.Errorf("hover missing %q\n--- got ---\n%s", want, got)
-				}
-			}
+			assertHover(t, hoverAt(t, h, uri, hoverSrc, tt.anchor, tt.word), tt.want, tt.notWant)
 		})
 	}
 }
@@ -231,15 +209,42 @@ func main() {
 
 // locate returns the LSP position of `word` inside the first line of src
 // containing `anchor`.
+//
+// The word must actually be inside the anchor: an anchor/word pair that has
+// drifted apart would otherwise silently place the cursor at the anchor's own
+// start and go on asserting about whatever is there.
 func locate(t *testing.T, src, anchor, word string) (line, col int) {
 	t.Helper()
+	wi := strings.Index(anchor, word)
+	if wi < 0 {
+		t.Fatalf("word %q not inside anchor %q", word, anchor)
+	}
 	for i, l := range strings.Split(src, "\n") {
 		if ai := strings.Index(l, anchor); ai >= 0 {
-			return i, ai + strings.Index(anchor, word) + 1
+			return i, ai + wi + 1
 		}
 	}
 	t.Fatalf("anchor %q not found", anchor)
 	return 0, 0
+}
+
+// assertHover checks a rendered hover body: every `want` present, every
+// `notWant` absent.
+func assertHover(t *testing.T, got string, want, notWant []string) {
+	t.Helper()
+	if got == "" {
+		t.Fatalf("hover returned nothing")
+	}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("hover missing %q\n--- got ---\n%s", w, got)
+		}
+	}
+	for _, nw := range notWant {
+		if strings.Contains(got, nw) {
+			t.Errorf("hover answered with the wrong symbol (contains %q)\n--- got ---\n%s", nw, got)
+		}
+	}
 }
 
 // settle waits until the document has been analyzed, by polling the position of
