@@ -59,12 +59,27 @@ func (t *galaASTTransformer) addVar(name string, typeName transpiler.Type) {
 }
 
 func (t *galaASTTransformer) recordLSPVarType(name string, typeName transpiler.Type) {
-	if t.lspVarTypes == nil || transpiler.IsUnusable(typeName) {
+	if t.lspVarTypes == nil {
 		return
 	}
 	key := name
 	if t.lspCurrentFunc != "" {
 		key = t.lspCurrentFunc + "." + name
+	}
+	if transpiler.IsUnusable(typeName) {
+		// Record the BINDING even when its type is unknown, but never over a
+		// type that did resolve.
+		//
+		// Consumers ask this map two different questions — what type does this
+		// name have, and is this name a local at all — and a name missing from
+		// it answers the second one "no". That is how a local whose type could
+		// not be inferred came to be documented as the package-level val it
+		// shadows. NilType renders as the empty string, which every consumer of
+		// the first question already treats as "no hint".
+		if _, seen := t.lspVarTypes[key]; !seen {
+			t.lspVarTypes[key] = transpiler.NilType{}
+		}
+		return
 	}
 	t.lspVarTypes[key] = typeName
 }

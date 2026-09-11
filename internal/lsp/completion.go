@@ -59,6 +59,7 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 		if richAST != nil {
 			items = append(items, typeCompletions(richAST)...)
 			items = append(items, functionCompletions(richAST)...)
+			items = append(items, packageValCompletions(richAST, varTypeMap)...)
 		}
 		items = append(items, keywordCompletions()...)
 	}
@@ -151,6 +152,30 @@ func functionCompletions(richAST *transpiler.RichAST) []lsp.CompletionItem {
 			Kind:   kindPtr(lsp.CompletionItemKindFunction),
 			Detail: sig,
 		}, completionRef{Kind: refKindFunc, Key: fnKey}))
+	}
+	return items
+}
+
+// packageValCompletions offers the package's own val/var bindings.
+//
+// Unexported ones are included, unlike types and functions: this list is
+// offered inside the package that declares them, where a lowercase binding is
+// exactly as referenceable as an uppercase one.
+func packageValCompletions(richAST *transpiler.RichAST, varTypeMap map[string]string) []lsp.CompletionItem {
+	items := make([]lsp.CompletionItem, 0, len(richAST.PackageVals))
+	for name, pv := range richAST.PackageVals {
+		// Same order as hover: the analyzer's own record, then the
+		// transformer's channel for everything it has no type for.
+		typeName := packageValType(pv)
+		if typeName == "" {
+			typeName = lookupVarType(varTypeMap, "", name)
+		}
+		detail := packageValSignature(pv, typeName)
+		items = append(items, withRef(lsp.CompletionItem{
+			Label:  name,
+			Kind:   kindPtr(lsp.CompletionItemKindVariable),
+			Detail: detail,
+		}, completionRef{Kind: refKindPackageVal, Key: name}))
 	}
 	return items
 }

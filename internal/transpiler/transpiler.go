@@ -107,6 +107,13 @@ type PackageValMetadata struct {
 	Name  string
 	Type  Type // declared/inferred element type T (NilType when unknown)
 	IsVal bool // true for `val` (Immutable-wrapped); false for `var` (plain)
+
+	// Documentation and provenance, recorded for the same reason every other
+	// declaration records them: a package-level binding is a documented symbol
+	// of its package, and hover has nowhere else to read its doc comment from.
+	Doc       string
+	Pos       SourcePos // the binding's own identifier, not the val/var keyword
+	DefinedIn string    // absolute path of the file declaring it
 }
 
 // RichAST provides metadata about a Gala source file.

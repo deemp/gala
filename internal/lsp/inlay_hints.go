@@ -122,20 +122,40 @@ func (h *GalaHandler) InlayHint(ctx context.Context, params *lsp.InlayHintParams
 // lookupVarType looks up a variable type from the scoped varTypeMap.
 // Keys are stored as "funcName.varName" for function-local vars, or "varName" for top-level.
 func lookupVarType(varTypeMap map[string]string, funcName, varName string) string {
+	typStr, _ := lookupVarTypeScoped(varTypeMap, funcName, varName)
+	return typStr
+}
+
+// lookupVarTypeScoped additionally reports whether the hit came from the
+// function-scoped key — that is, whether the name is a local rather than a
+// package-level binding. Callers that must tell a local apart from a
+// same-named package val (hover, which documents only the latter) need the
+// distinction, and deriving it from a second lookup elsewhere would put the
+// "funcName.varName" key format in two places.
+func lookupVarTypeScoped(varTypeMap map[string]string, funcName, varName string) (string, bool) {
 	if varTypeMap == nil {
-		return ""
+		return "", false
 	}
 	// Try function-scoped lookup first
 	if funcName != "" {
 		if typStr, ok := varTypeMap[funcName+"."+varName]; ok {
-			return typStr
+			if typStr != "" {
+				return typStr, true
+			}
+			// A binding recorded with no type still answers "this name is a
+			// local" — but it must not answer "and its type is nothing", or a
+			// top-level declaration would lose its hint to a same-named local
+			// whose type failed to resolve. The unscoped entry, if any, is the
+			// best type available; the local verdict stands either way.
+			typStr, _ := varTypeMap[varName]
+			return typStr, true
 		}
 	}
 	// Fall back to unscoped lookup
 	if typStr, ok := varTypeMap[varName]; ok {
-		return typStr
+		return typStr, false
 	}
-	return ""
+	return "", false
 }
 
 func casePatternHints(line string, lineNum int, richAST *transpiler.RichAST) []lsp.InlayHint {
@@ -205,4 +225,21 @@ func makeTypeHint(line, col int, typeName string) lsp.InlayHint {
 		Kind:         &kind,
 		PaddingRight: &paddingRight,
 	}
+}
+
+// hasResolvedVarType reports whether the channel carries at least one type that
+// actually resolved.
+//
+// The transformer also records bindings whose type it could not infer, so that
+// the LSP can tell a local from a package-level val (see recordLSPVarType).
+// Those entries render as the empty string, and a map holding only them means
+// analysis produced no type information — which is what the callers of this are
+// really asking.
+func hasResolvedVarType(varTypeMap map[string]string) bool {
+	for _, typStr := range varTypeMap {
+		if typStr != "" {
+			return true
+		}
+	}
+	return false
 }

@@ -54,7 +54,8 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 	// dot. Computed once: the package-member handler reads the qualifier off
 	// the prefix, and the fall-through guard below asks only whether there was
 	// a dot at all.
-	memberPrefix, isMemberAccess := memberAccessPrefix(strings.Split(text, "\n"), line, char)
+	lines := strings.Split(text, "\n")
+	memberPrefix, isMemberAccess := memberAccessPrefix(lines, line, char)
 
 	// pkg.Symbol — clicking a member qualified by an imported package name
 	// navigates to that symbol's definition in the package's source files.
@@ -248,6 +249,23 @@ func (h *GalaHandler) Definition(ctx context.Context, params *lsp.DefinitionPara
 				if loc != nil {
 					return []lsp.Location{*loc}, nil
 				}
+			}
+		}
+	}
+
+	// A package-level val/var, from the position the analyzer recorded — which
+	// reaches a binding declared in a sibling file of the same package, and is
+	// exact where the text scan below is a first-match-wins guess that lands on
+	// whichever function body happens to declare the name first.
+	//
+	// The map probe comes first: establishing the enclosing function costs a
+	// regex per line back to the top of the file, and package-level bindings
+	// are rare enough that most requests must not pay for it.
+	if _, isBinding := richAST.PackageVals[word]; isBinding {
+		_, isLocal := lookupVarTypeScoped(varTypeMap, findEnclosingFunc(lines, line), word)
+		if pv := packageValAt(richAST, word, uriToPath(uri), line, char, isLocal); pv != nil {
+			if loc := locationAt(pv.DefinedIn, pv.Pos, word); loc != nil {
+				return []lsp.Location{*loc}, nil
 			}
 		}
 	}
