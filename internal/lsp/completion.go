@@ -32,7 +32,7 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 	// the cleaned document, and cache the result. This is the "IntelliJ
 	// trick" used by rust-analyzer — targeted at the known cursor position,
 	// not a file-wide heuristic.
-	if isDot && (richAST == nil || len(varTypeMap) == 0) {
+	if isDot && (richAST == nil || !hasResolvedVarType(varTypeMap)) {
 		h.ensureAnalysis(uri, line, char)
 		h.mu.Lock()
 		richAST = h.richASTs[uri]

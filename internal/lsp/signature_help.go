@@ -38,7 +38,7 @@ func (h *GalaHandler) SignatureHelp(ctx context.Context, params *lsp.SignatureHe
 	// This may short-circuit if the main DidChange pipeline already
 	// produced them (from a lenient/partial parse), or it may parse a
 	// surgically closed variant of the source.
-	if richAST == nil || len(varTypeMap) == 0 {
+	if richAST == nil || !hasResolvedVarType(varTypeMap) {
 		h.ensureAnalysisForSignature(uri, line, char)
 		h.mu.Lock()
 		richAST = h.richASTs[uri]
