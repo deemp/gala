@@ -301,3 +301,49 @@ func assertFirstParam(t *testing.T, h *servertest.Harness, uri lsp.DocumentURI, 
 		t.Errorf("expected the builder's own parameter list, got %q", sh.Signatures[0].Label)
 	}
 }
+
+// The chain continues on the NEXT line — which is the moment the user is
+// actually typing the next call. A dot-completion check that looked only at the
+// cursor's own line stopped seeing the trailing dot there and answered with the
+// global type and keyword list, so a builder offered its methods for the first
+// call and nothing useful for any call after it.
+func TestCompletionOnTheLineAfterATrailingDot(t *testing.T) {
+	const src = `package main
+
+import "github.com/example/kv/internal/srv"
+
+func Run() {
+    srv.NewServer().
+        WithName("gala-kv").
+        Wi
+}
+`
+	h, uri := openChainProject(t, src)
+
+	for _, tt := range []struct {
+		name      string
+		line, col int
+	}{
+		// Where the caret sits right after pressing Enter.
+		{"indent of a fresh continuation line", 7, 8},
+		// And once a partial method name is typed.
+		{"partial identifier on that line", 7, 10},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			list, err := h.Completion(uri, tt.line, tt.col)
+			if err != nil {
+				t.Fatalf("completion: %v", err)
+			}
+			for _, want := range []string{"WithTimeout(", "ServeTCPOn("} {
+				if !hasLabelPrefix(list, want) {
+					t.Errorf("completion missing %q, got %v", want, labelSlice(list))
+				}
+			}
+			// The global list is what the broken check fell back to; a type name
+			// is not a member of the builder.
+			if hasLabelPrefix(list, "Tuple") {
+				t.Errorf("answered with the global list instead of the receiver's members: %v", labelSlice(list))
+			}
+		})
+	}
+}
