@@ -99,6 +99,8 @@ std/option.go
 
 # IntelliJ plugin generated ANTLR sources and build artifacts
 ide/intellij/src/main/gen/
+ide/intellij/.intellijPlatform/
+ide/intellij/.kotlin/
 
 ### Gradle template
 .gradle

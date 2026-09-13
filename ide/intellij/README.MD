@@ -21,7 +21,9 @@ bazel build //ide/intellij:plugin
 
 The resulting ZIP file will be at `bazel-bin/ide/intellij/gala-intellij-plugin.zip`.
 
-This single command generates the ANTLR Java lexer/parser from `gala.g4`, copies them into the plugin source tree, and runs Gradle to compile and package the plugin.
+This single command generates the ANTLR Java lexer/parser from `gala.g4`, copies them into the plugin source tree, and runs Gradle to compile, test, and package the plugin.
+
+The Gradle build uses the IntelliJ Platform Gradle Plugin 2.x against GoLand 2025.2.x. Unit tests live in `src/test/kotlin` (platform tests built on `BasePlatformTestCase` / `ParsingTestCase`) and run as part of the Bazel target. Gradle needs a JDK 17+ to start; the JDK 21 toolchain the platform requires is provisioned automatically. Once `src/main/gen/` has been populated by a Bazel build, tests can be iterated on directly with `gradle -p ide/intellij test`.
 
 ## How to Install
 
