@@ -1,11 +1,12 @@
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "2.1.0"
-    id("org.jetbrains.intellij") version "1.17.4"
+    id("org.jetbrains.kotlin.jvm") version "2.2.20"
+    id("org.jetbrains.intellij.platform") version "2.18.1"
 }
 
 val ideaVersion: String by project
-val ideaType: String by project
 val antlr4Version: String by project
 val antlr4AdaptorVersion: String by project
 val pluginVersion: String by project
@@ -15,6 +16,9 @@ version = System.getenv("GALA_VERSION")?.removePrefix("v") ?: pluginVersion
 
 repositories {
     mavenCentral()
+    intellijPlatform {
+        defaultRepositories()
+    }
 }
 
 dependencies {
@@ -22,13 +26,38 @@ dependencies {
     implementation("org.antlr:antlr4-runtime:$antlr4Version")
 
     testImplementation("junit:junit:4.13.2")
+
+    intellijPlatform {
+        // GoLand ships the LSP API (com.intellij.modules.lsp) the plugin depends on.
+        // The Maven artifact is used rather than the installer; the JetBrains Runtime
+        // the tests run on is resolved separately below.
+        goland(ideaVersion) { useInstaller = false }
+        jetbrainsRuntime()
+        bundledPlugin("org.jetbrains.plugins.go")
+        testFramework(TestFrameworkType.Platform)
+    }
 }
 
-// Configure Gradle IntelliJ Plugin
-intellij {
-    version.set(ideaVersion)
-    type.set(ideaType)
-    plugins.set(listOf("org.jetbrains.plugins.go"))
+intellijPlatform {
+    buildSearchableOptions = false
+
+    pluginConfiguration {
+        version = project.version.toString()
+        ideaVersion {
+            sinceBuild = "252"
+            untilBuild = "265.*"
+        }
+    }
+
+    signing {
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
+        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
+    }
+
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+    }
 }
 
 // Include Bazel-generated ANTLR Java sources
@@ -38,39 +67,9 @@ sourceSets {
             srcDir("src/main/gen")
         }
     }
-    // Exclude test sources when test framework is not available
-    test {
-        kotlin {
-            setSrcDirs(emptyList<String>())
-        }
-    }
 }
 
-tasks {
-    withType<JavaCompile> {
-        sourceCompatibility = "17"
-        targetCompatibility = "17"
-    }
-    withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-        kotlinOptions.jvmTarget = "17"
-    }
-
-    buildSearchableOptions {
-        enabled = false
-    }
-
-    patchPluginXml {
-        sinceBuild.set("252")
-        untilBuild.set("265.*")
-    }
-
-    signPlugin {
-        certificateChain.set(System.getenv("CERTIFICATE_CHAIN"))
-        privateKey.set(System.getenv("PRIVATE_KEY"))
-        password.set(System.getenv("PRIVATE_KEY_PASSWORD"))
-    }
-
-    publishPlugin {
-        token.set(System.getenv("PUBLISH_TOKEN"))
-    }
+// IntelliJ Platform 2025.2 (build 252) runs on Java 21.
+kotlin {
+    jvmToolchain(21)
 }
