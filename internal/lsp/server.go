@@ -176,7 +176,14 @@ func (h *GalaHandler) Initialize(ctx context.Context, params *lsp.InitializePara
 			HoverProvider:      boolPtr(true),
 			DefinitionProvider: boolPtr(true),
 			CompletionProvider: &lsp.CompletionOptions{
-				TriggerCharacters: []string{".", "("},
+				// `.` only. `(` opens an argument list, which signature help
+				// answers; as a completion trigger it ran a popup after every
+				// call's opening paren that almost always came back empty, and
+				// IntelliJ parks an empty auto-popup in
+				// CompletionPhase.EmptyAutoPopup, where the next scheduled
+				// auto-popup — typically the `.` for the following link of a
+				// builder chain — is skipped.
+				TriggerCharacters: []string{"."},
 				// Documentation is attached per item on demand rather than for the
 				// whole list — see completion_resolve.go.
 				ResolveProvider: boolPtr(true),

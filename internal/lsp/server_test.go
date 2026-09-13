@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -5356,5 +5357,36 @@ func TestCompletion_LongBuilderChain(t *testing.T) {
 		targetLine, targetCol, len(list.Items), labelSlice(list))
 	if !hasLabelPrefix(list, "WithFilter") || !hasLabelPrefix(list, "Start") {
 		t.Fatalf("expected Server methods (WithFilter, Start) after 13-call chain ending in WithFilter(\"ETag\"). — got %v", labelSlice(list))
+	}
+}
+
+// `(` must not be a completion trigger.
+//
+// Typing a call's opening paren would run a completion popup that almost always
+// comes back empty, and IntelliJ parks an empty auto-popup in
+// CompletionPhase.EmptyAutoPopup, where the next scheduled auto-popup — typically
+// the `.` after `WithName("gala-kv")` — is skipped. `(` belongs to signature
+// help.
+func TestCompletionTriggerCharactersExcludeOpenParen(t *testing.T) {
+	handler := lspserver.NewGalaHandler()
+	res, err := handler.Initialize(context.Background(), &lsp.InitializeParams{})
+	if err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+	caps := res.Capabilities
+
+	if caps.CompletionProvider == nil {
+		t.Fatal("no completion provider advertised")
+	}
+	triggers := caps.CompletionProvider.TriggerCharacters
+	if !slices.Contains(triggers, ".") {
+		t.Errorf("completion must trigger on '.', got %q", triggers)
+	}
+	if slices.Contains(triggers, "(") {
+		t.Errorf("completion must not trigger on '(' — it parks the IDE's popup phase; got %q", triggers)
+	}
+
+	if caps.SignatureHelpProvider == nil || !slices.Contains(caps.SignatureHelpProvider.TriggerCharacters, "(") {
+		t.Error("signature help must keep '(' as its trigger")
 	}
 }
