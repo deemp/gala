@@ -32,7 +32,7 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 	// the cleaned document, and cache the result. This is the "IntelliJ
 	// trick" used by rust-analyzer — targeted at the known cursor position,
 	// not a file-wide heuristic.
-	if isDot && (richAST == nil || len(varTypeMap) == 0) {
+	if isDot && (richAST == nil || !hasResolvedVarType(varTypeMap)) {
 		h.ensureAnalysis(uri, line, char)
 		h.mu.Lock()
 		richAST = h.richASTs[uri]
@@ -71,34 +71,18 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 	return &lsp.CompletionList{IsIncomplete: false, Items: items}, nil
 }
 
+// isDotCompletion reports whether the cursor is completing a member of
+// something — that is, whether a dot selects what is being typed.
+//
+// The dot is looked for on the FLATTENED expression, not the cursor's line. A
+// builder chain is written one call per line with the dot trailing the previous
+// line, so the moment the user presses Enter to continue the chain, a
+// line-local check stopped seeing it and completion answered with the global
+// type and keyword list instead of the receiver's methods. The same predicate
+// answers for hover and go-to-definition.
 func isDotCompletion(text string, line, char int) bool {
-	lines := strings.Split(text, "\n")
-	if line >= len(lines) {
-		return false
-	}
-	l := lines[line]
-	if char > len(l) {
-		char = len(l)
-	}
-	if char <= 0 {
-		return false
-	}
-
-	// Direct check: is the char right before cursor a dot?
-	if l[char-1] == '.' {
-		return true
-	}
-
-	// Walk backwards past any partial identifier being typed (user typing after dot)
-	i := char - 1
-	for i >= 0 && isIdentChar(l[i]) {
-		i--
-	}
-	if i >= 0 && l[i] == '.' {
-		return true
-	}
-
-	return false
+	_, ok := memberAccessPrefix(strings.Split(text, "\n"), line, char)
+	return ok
 }
 
 func typeCompletions(richAST *transpiler.RichAST) []lsp.CompletionItem {
