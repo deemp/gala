@@ -45,7 +45,7 @@ class GalaTypedHandlerTest : BasePlatformTestCase() {
     }
 
     fun testDotInCodeOpensCompletion() {
-        configure("fun main() {\n    val name = \"gala\"\n    name<caret>\n}\n")
+        configure("func main() {\n    val name = \"gala\"\n    name<caret>\n}\n")
 
         tester.runWithAutoPopupEnabled { typeDot() }
 
@@ -58,7 +58,7 @@ class GalaTypedHandlerTest : BasePlatformTestCase() {
      * completion.
      */
     fun testDotOpensCompletionAfterEmptyAutoPopup() {
-        configure("fun main() {\n    val name = \"gala\"\n    <caret>\n}\n")
+        configure("func main() {\n    val name = \"gala\"\n    <caret>\n}\n")
 
         tester.runWithAutoPopupEnabled {
             MemberContributor.offerItems = false
@@ -75,7 +75,7 @@ class GalaTypedHandlerTest : BasePlatformTestCase() {
     }
 
     fun testDotTypedWhileLookupIsOpenReopensCompletion() {
-        configure("fun main() {\n    val name = \"gala\"\n    name<caret>\n}\n")
+        configure("func main() {\n    val name = \"gala\"\n    name<caret>\n}\n")
 
         tester.runWithAutoPopupEnabled {
             typeDot()
@@ -90,7 +90,7 @@ class GalaTypedHandlerTest : BasePlatformTestCase() {
     }
 
     fun testDotInLineCommentDoesNotOpenCompletion() {
-        configure("fun main() {\n    // see name<caret>\n}\n")
+        configure("func main() {\n    // see name<caret>\n}\n")
 
         tester.runWithAutoPopupEnabled { typeDot() }
 
@@ -98,7 +98,7 @@ class GalaTypedHandlerTest : BasePlatformTestCase() {
     }
 
     fun testDotInStringLiteralDoesNotOpenCompletion() {
-        configure("fun main() {\n    val s = \"name<caret>\"\n}\n")
+        configure("func main() {\n    val s = \"name<caret>\"\n}\n")
 
         tester.runWithAutoPopupEnabled { typeDot() }
 
@@ -106,7 +106,7 @@ class GalaTypedHandlerTest : BasePlatformTestCase() {
     }
 
     fun testCheckAutoPopupClaimsOnlyDot() {
-        configure("fun main() {\n    name<caret>\n}\n")
+        configure("func main() {\n    name<caret>\n}\n")
         val handler = GalaTypedHandler()
 
         runInEdtAndWait {
