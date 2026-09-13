@@ -79,6 +79,11 @@
         <lang.braceMatcher language="GALA" implementationClass="org.gala.ide.intellij.GalaPairedBraceMatcher"/>
         <lang.psiStructureViewFactory language="GALA" implementationClass="org.gala.ide.intellij.GalaStructureViewFactory"/>
         <completion.contributor language="GALA" implementationClass="org.gala.ide.intellij.GalaCompletionContributor"/>
+        <!-- Member completion on `.`: invoked directly rather than scheduled,
+             because a scheduled auto-popup is silently dropped whenever an
+             earlier completion has left the phase anywhere but NoCompletion.
+             Ordered first so it decides before other typed handlers. -->
+        <typedHandler implementation="org.gala.ide.intellij.GalaTypedHandler" order="first"/>
         <lang.findUsagesProvider language="GALA" implementationClass="org.gala.ide.intellij.GalaFindUsagesProvider"/>
         <gotoSymbolContributor implementationClass="org.gala.ide.intellij.GalaGoToSymbolContributor"/>
         <annotator language="GALA" implementationClass="org.gala.ide.intellij.GalaAnnotator"/>
