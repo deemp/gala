@@ -60,6 +60,9 @@ type GalaHandler struct {
 	goSrcDirs        map[string]string // Go module import-path prefix -> on-disk .go source dir (third-party deps)
 	moduleRoots      []moduleRoot      // modules whose packages this project can import, from gala.mod
 	client           *golsp.Client     // LSP client for sending notifications
+	// snippetSupport is whether the client accepts snippet insert text in
+	// completion items (tab stops such as `$1`), from Initialize.
+	snippetSupport bool
 
 	mu              sync.Mutex
 	documents       map[string]string              // URI -> source text
@@ -154,6 +157,12 @@ func NewGalaHandler() *GalaHandler {
 func (h *GalaHandler) Initialize(ctx context.Context, params *lsp.InitializeParams) (*lsp.InitializeResult, error) {
 	if params.RootURI != nil {
 		h.rootPath = uriToPath(string(*params.RootURI))
+	}
+	if td := params.Capabilities.TextDocument; td != nil && td.Completion != nil &&
+		td.Completion.CompletionItem != nil && td.Completion.CompletionItem.SnippetSupport != nil {
+		h.mu.Lock()
+		h.snippetSupport = *td.Completion.CompletionItem.SnippetSupport
+		h.mu.Unlock()
 	}
 
 	fmt.Fprintf(os.Stderr, "[gala-lsp] Initialize rootPath=%s extraSearchPaths=%v\n", h.rootPath, h.extraSearchPaths)

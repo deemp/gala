@@ -49,21 +49,7 @@ func (h *GalaHandler) SignatureHelp(ctx context.Context, params *lsp.SignatureHe
 		return nil, nil
 	}
 
-	// Always parse a freshly-patched version of the source for the tree
-	// walk. Relying on h.parseTrees would risk reading back a tree that
-	// was parsed from a different cursor's patched text (or from a
-	// lenient, error-recovered tree of the raw unclosed source), making
-	// call-site offsets misaligned with the current cursor.
-	treeText, cursorOffset := patchTextForSignature(text, line, char)
-	if cursorOffset < 0 {
-		return nil, nil
-	}
-	tree, _, _ := h.parser.ParseLenient(treeText)
-	if tree == nil {
-		return nil, nil
-	}
-
-	call := findCallAtOffset(tree, treeText, cursorOffset)
+	call := h.findCallAtCaret(text, line, char)
 	if call == nil {
 		return nil, nil
 	}
@@ -106,6 +92,44 @@ type callContext struct {
 	// argIndex is the zero-based index of the argument the cursor sits
 	// in, counted from structural commas in the argumentList.
 	argIndex int
+	// argStarts holds the offsets of this call's own `(` and top-level
+	// commas — the points after which a new argument begins.
+	argStarts map[int]bool
+	// named holds the names of arguments already passed by name, and
+	// positional counts the positional ones before the cursor; neither
+	// includes the argument the cursor is in.
+	named      map[string]bool
+	positional int
+}
+
+// findCallAtCaret finds the call whose argument list holds the caret.
+//
+// The tree is always parsed fresh rather than read back from h.parseTrees,
+// which may come from another caret's patched text, or from an error-recovered
+// tree whose offsets do not line up with this one.
+//
+// The document is tried closed at the caret first: an argument list still
+// being typed has no `)`, and ANTLR produces no call without one. When that
+// finds nothing, it is tried as it stands — editors insert the `)` as the `(`
+// is typed, and closing an already closed call a second time breaks it, so
+// `WithName(|)` resolved to nothing.
+func (h *GalaHandler) findCallAtCaret(text string, line, char int) *callContext {
+	if patched, offset := patchTextForSignature(text, line, char); offset >= 0 {
+		if tree, _, _ := h.parser.ParseLenient(patched); tree != nil {
+			if call := findCallAtOffset(tree, patched, offset); call != nil {
+				return call
+			}
+		}
+	}
+	offset := lineCharToOffset(text, line, char)
+	if offset < 0 {
+		return nil
+	}
+	tree, _, _ := h.parser.ParseLenient(text)
+	if tree == nil {
+		return nil
+	}
+	return findCallAtOffset(tree, text, offset)
 }
 
 // patchTextForSignature inserts a closing `)` at the cursor so the call
@@ -293,12 +317,42 @@ func buildCallContext(callSuffix *grammar.PostfixSuffixContext, parent *grammar.
 		name = primaryText
 	}
 
-	argIndex := argIndexAt(callSuffix.ArgumentList(), cursorOffset)
-	return &callContext{
+	call := &callContext{
 		name:          name,
 		receiverChain: receiverChain,
-		argIndex:      argIndex,
+		argIndex:      argIndexAt(callSuffix.ArgumentList(), cursorOffset),
+		argStarts:     map[int]bool{},
+		named:         map[string]bool{},
 	}
+	if open := findChildTerminal(callSuffix, "("); open != nil {
+		call.argStarts[open.GetSymbol().GetStart()] = true
+	}
+	argList, _ := callSuffix.ArgumentList().(*grammar.ArgumentListContext)
+	if argList == nil {
+		return call
+	}
+	for _, child := range argList.GetChildren() {
+		if term, ok := child.(antlr.TerminalNode); ok && term.GetText() == "," {
+			call.argStarts[term.GetSymbol().GetStart()] = true
+		}
+	}
+	for _, a := range argList.AllArgument() {
+		arg, ok := a.(*grammar.ArgumentContext)
+		if !ok || arg.GetStart() == nil || arg.GetStop() == nil {
+			continue
+		}
+		start, end := arg.GetStart().GetStart(), arg.GetStop().GetStop()+1
+		if start <= cursorOffset && cursorOffset <= end {
+			continue
+		}
+		switch {
+		case arg.Identifier() != nil:
+			call.named[arg.Identifier().GetText()] = true
+		case end <= cursorOffset:
+			call.positional++
+		}
+	}
+	return call
 }
 
 // contextText returns the original source text covered by the given
@@ -372,15 +426,34 @@ func isIdentifier(s string) bool {
 	return true
 }
 
-// resolveCallSignature resolves a callContext to a SignatureInformation by
-// looking up the callee in richAST. Supports:
+// resolveCallSignature resolves a callContext to a SignatureInformation
+// for the callee resolveCallTarget finds.
+func resolveCallSignature(call *callContext, enclosingFunc string, richAST *transpiler.RichAST, varTypes map[string]string) *lsp.SignatureInformation {
+	switch target := resolveCallTarget(call, enclosingFunc, richAST, varTypes); {
+	case target.fn != nil:
+		return functionSignature(call.name, target.fn)
+	case target.method != nil:
+		return methodSignature(call.name, target.method)
+	case target.typ != nil:
+		return typeConstructorSignature(call.name, target.typ)
+	}
+	return nil
+}
+
+// callTarget is what a call resolves to; at most one field is set.
+type callTarget struct {
+	fn     *transpiler.FunctionMetadata
+	method *transpiler.MethodMetadata
+	typ    *transpiler.TypeMetadata // a constructor call, whose parameters are the fields
+}
+
+// resolveCallTarget looks up the callee of a callContext in richAST. Supports:
 //   - Bare function calls (`foo(`) → richAST.Functions[name]
 //   - Method calls on a receiver expression (`expr.foo(`) → resolve receiver
 //     type via resolveChainTypeN, then find Methods[name] on that type
-//   - Constructor-like calls on types (`Type(`) → fall back to type fields
-//     treated as a positional parameter list (named args still work via
-//     completion)
-func resolveCallSignature(call *callContext, enclosingFunc string, richAST *transpiler.RichAST, varTypes map[string]string) *lsp.SignatureInformation {
+//   - Constructor-like calls on types (`Type(`) → the type's fields, treated
+//     as its parameter list
+func resolveCallTarget(call *callContext, enclosingFunc string, richAST *transpiler.RichAST, varTypes map[string]string) callTarget {
 	// Method call on a receiver expression.
 	if call.receiverChain != "" {
 		receiverType := resolveChainTypeN(call.receiverChain, enclosingFunc, richAST, varTypes, 0)
@@ -393,9 +466,9 @@ func resolveCallSignature(call *callContext, enclosingFunc string, richAST *tran
 		if pkg, isPkg := strings.CutPrefix(receiverType, packagePrefix); isPkg {
 			switch m := lookupPackageMember(richAST, pkg, call.name); {
 			case m.Func != nil:
-				return functionSignature(call.name, m.Func)
+				return callTarget{fn: m.Func}
 			case m.Type != nil && len(m.Type.FieldNames) > 0:
-				return typeConstructorSignature(call.name, m.Type)
+				return callTarget{typ: m.Type}
 			}
 			// A case constructor, or nothing at all, falls through: the
 			// companion type the transpiler generates for a case is what
@@ -404,7 +477,7 @@ func resolveCallSignature(call *callContext, enclosingFunc string, richAST *tran
 		if receiverType != "" {
 			if tm := findType(richAST, receiverType); tm != nil {
 				if m, ok := tm.Methods[call.name]; ok {
-					return methodSignature(call.name, m)
+					return callTarget{method: m}
 				}
 			}
 		}
@@ -415,7 +488,7 @@ func resolveCallSignature(call *callContext, enclosingFunc string, richAST *tran
 
 	// Free function.
 	if fm := findFunction(richAST, call.name); fm != nil {
-		return functionSignature(call.name, fm)
+		return callTarget{fn: fm}
 	}
 
 	// Type constructor: `Person(name = "...", age = 30)` — build a
@@ -423,10 +496,10 @@ func resolveCallSignature(call *callContext, enclosingFunc string, richAST *tran
 	// primary UX for this, but showing the positional signature gives
 	// useful hint text too.
 	if tm := findType(richAST, call.name); tm != nil && len(tm.FieldNames) > 0 {
-		return typeConstructorSignature(call.name, tm)
+		return callTarget{typ: tm}
 	}
 
-	return nil
+	return callTarget{}
 }
 
 func functionSignature(name string, fm *transpiler.FunctionMetadata) *lsp.SignatureInformation {

@@ -4269,7 +4269,9 @@ The LSP server leverages the full transpiler pipeline for deep, type-aware analy
 - **Hover** — signatures and [documentation](#19-documentation-comments) for types, methods, fields, functions, local bindings, sealed cases and packages
 - **Go to Definition** — cross-file navigation via analyzer metadata, local declarations, pattern bindings, named arg fields
 - **Find References** — find all occurrences in the same file
-- **Completion** — type-aware dot completion (fields, methods), named argument fields, sealed case patterns with destructuring, keywords, built-in functions; documentation is fetched per entry as it is highlighted
+- **Completion** — type-aware dot completion (fields, methods), sealed case patterns with destructuring, keywords, built-in functions; documentation is fetched per entry as it is highlighted
+  - Completing a method or function writes out its required parameters as named arguments, with a tab stop for each value: `WithName(name = |)`
+  - Inside an argument list, the parameters not given yet are offered as named arguments first — for functions, methods (resolved through builder chains) and constructors
 - **Signature help** — the callee's summary and each parameter's own documentation line as you type the argument
 - **Inlay hints** — displays inferred types from the transpiler's VarTypes for `val`, `var`, and other declarations
 - **Document symbols** — types, functions, sealed variants in the document outline

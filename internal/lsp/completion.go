@@ -20,9 +20,11 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 	text := h.documents[uri]
 	richAST := h.richASTs[uri]
 	varTypeMap := h.varTypes[uri]
+	snippets := h.snippetSupport
 	h.mu.Unlock()
 
 	items := make([]lsp.CompletionItem, 0)
+	incomplete := false
 
 	isDot := isDotCompletion(text, line, char)
 
@@ -40,35 +42,73 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 		h.mu.Unlock()
 	}
 
+	// The parameters of the call whose next argument the caret begins.
+	var paramItems []lsp.CompletionItem
+	typed := ""
+	resolvedCall := false
+	if !isDot && richAST != nil {
+		if call, prefix := h.callAtArgumentStart(text, line, char); call != nil {
+			enclosingFunc := findEnclosingFunc(strings.Split(text, "\n"), line)
+			target := resolveCallTarget(call, enclosingFunc, richAST, varTypeMap)
+			resolvedCall = target != callTarget{}
+			paramItems = parameterCompletions(call, target)
+			typed = prefix
+		}
+	}
+	// Named arguments of a case constructor, which resolveCallTarget does not
+	// resolve. Empty whenever there are none, so the global list still answers
+	// for an argument being typed to any other exported call.
+	var caseArgs []lsp.CompletionItem
+	if !isDot && !resolvedCall && richAST != nil && isNamedArgContext(text, line, char) {
+		caseArgs = namedArgCompletions(richAST, extractConstructorName(text, line, char))
+	}
+
 	if isDot && richAST != nil {
 		receiverType := typeAtDot(text, line, char, richAST, varTypeMap)
 		if strings.HasPrefix(receiverType, packagePrefix) {
 			// Package dot completion — show types and functions from that package
 			pkgName := strings.TrimPrefix(receiverType, packagePrefix)
-			items = append(items, packageCompletions(richAST, pkgName)...)
+			items = append(items, packageCompletions(richAST, pkgName, snippets)...)
 		} else if receiverType != "" {
-			items = append(items, typeSpecificCompletions(richAST, receiverType)...)
+			items = append(items, typeSpecificCompletions(richAST, receiverType, snippets)...)
 		}
-	} else if isNamedArgContext(text, line, char) && richAST != nil {
-		typeName := extractConstructorName(text, line, char)
-		items = append(items, namedArgCompletions(richAST, typeName)...)
+	} else if len(paramItems) > 0 {
+		items = append(items, paramItems...)
+		if typed == "" {
+			// Nothing typed yet, so the parameters are the whole answer. The
+			// list is marked incomplete so that the first character typed asks
+			// again, and a positional argument still completes.
+			incomplete = true
+		} else {
+			items = append(items, globalCompletions(richAST, varTypeMap, snippets)...)
+		}
+	} else if len(caseArgs) > 0 {
+		items = append(items, caseArgs...)
 	} else if isMatchCaseContext(text, line, char) && richAST != nil {
 		matchedType := extractMatchSubjectType(text, line, richAST, varTypeMap)
 		items = append(items, matchCaseCompletions(richAST, matchedType)...)
 	} else {
-		if richAST != nil {
-			items = append(items, typeCompletions(richAST)...)
-			items = append(items, functionCompletions(richAST)...)
-			items = append(items, packageValCompletions(richAST, varTypeMap)...)
-		}
-		items = append(items, keywordCompletions()...)
+		items = append(items, globalCompletions(richAST, varTypeMap, snippets)...)
 	}
 
 	// Stamp the document once, here, rather than passing it into every completion
 	// helper: it is identical for every item in the list, and a per-request value
 	// belongs in the request handler.
 	stampRefURI(items, uri)
-	return &lsp.CompletionList{IsIncomplete: false, Items: items}, nil
+	return &lsp.CompletionList{IsIncomplete: incomplete, Items: items}, nil
+}
+
+// globalCompletions is what completes where no receiver or narrower context
+// applies: the types, functions and package-level bindings in scope, and the
+// keywords.
+func globalCompletions(richAST *transpiler.RichAST, varTypeMap map[string]string, snippets bool) []lsp.CompletionItem {
+	items := make([]lsp.CompletionItem, 0)
+	if richAST != nil {
+		items = append(items, typeCompletions(richAST)...)
+		items = append(items, functionCompletions(richAST, snippets)...)
+		items = append(items, packageValCompletions(richAST, varTypeMap)...)
+	}
+	return append(items, keywordCompletions()...)
 }
 
 // isDotCompletion reports whether the cursor is completing a member of
@@ -124,20 +164,32 @@ func typeCompletions(richAST *transpiler.RichAST) []lsp.CompletionItem {
 	return items
 }
 
-func functionCompletions(richAST *transpiler.RichAST) []lsp.CompletionItem {
+func functionCompletions(richAST *transpiler.RichAST, snippets bool) []lsp.CompletionItem {
 	items := make([]lsp.CompletionItem, 0)
 	for fnKey, fm := range richAST.Functions {
 		if !isExported(fm.Name) {
 			continue
 		}
-		sig := formatFuncSig(fm)
-		items = append(items, withRef(lsp.CompletionItem{
-			Label:  fm.Name,
-			Kind:   kindPtr(lsp.CompletionItemKindFunction),
-			Detail: sig,
-		}, completionRef{Kind: refKindFunc, Key: fnKey}))
+		items = append(items, withRef(functionItem(fm, snippets), completionRef{Kind: refKindFunc, Key: fnKey}))
 	}
 	return items
+}
+
+// functionItem is the completion item for calling a GALA function.
+//
+// Only a snippet client gets insert text: it completes the whole call. Without
+// snippets the bare name is inserted, as before — a function is also a value,
+// passed as a callback without a call.
+func functionItem(fm *transpiler.FunctionMetadata, snippets bool) lsp.CompletionItem {
+	item := lsp.CompletionItem{
+		Label:  fm.Name,
+		Kind:   kindPtr(lsp.CompletionItemKindFunction),
+		Detail: formatFuncSig(fm),
+	}
+	if snippets {
+		item.InsertText, item.InsertTextFormat = callInsertText(fm.Name, fm.ParamNames, fm.DefaultExprs, true)
+	}
+	return item
 }
 
 // packageValCompletions offers the package's own val/var bindings.
@@ -165,7 +217,7 @@ func packageValCompletions(richAST *transpiler.RichAST, varTypeMap map[string]st
 }
 
 // packageCompletions returns exported types and functions from a specific package.
-func packageCompletions(richAST *transpiler.RichAST, pkgName string) []lsp.CompletionItem {
+func packageCompletions(richAST *transpiler.RichAST, pkgName string, snippets bool) []lsp.CompletionItem {
 	items := make([]lsp.CompletionItem, 0)
 	seen := make(map[string]bool)
 
@@ -196,12 +248,7 @@ func packageCompletions(richAST *transpiler.RichAST, pkgName string) []lsp.Compl
 	for fnKey, fm := range richAST.Functions {
 		if fm.Package == pkgName && isExported(fm.Name) && !seen[fm.Name] {
 			seen[fm.Name] = true
-			sig := formatFuncSig(fm)
-			items = append(items, withRef(lsp.CompletionItem{
-				Label:  fm.Name,
-				Kind:   kindPtr(lsp.CompletionItemKindFunction),
-				Detail: sig,
-			}, completionRef{Kind: refKindFunc, Key: fnKey}))
+			items = append(items, withRef(functionItem(fm, snippets), completionRef{Kind: refKindFunc, Key: fnKey}))
 		}
 	}
 
@@ -539,7 +586,7 @@ func goSizeSugarCompletions(typeName string) []lsp.CompletionItem {
 }
 
 // typeSpecificCompletions returns methods and fields for a specific type.
-func typeSpecificCompletions(richAST *transpiler.RichAST, typeName string) []lsp.CompletionItem {
+func typeSpecificCompletions(richAST *transpiler.RichAST, typeName string, snippets bool) []lsp.CompletionItem {
 	items := make([]lsp.CompletionItem, 0)
 
 	// GALA's `.Size()` / `.ByteSize()` sugar is available on Go primitive
@@ -563,20 +610,15 @@ func typeSpecificCompletions(richAST *transpiler.RichAST, typeName string) []lsp
 	// Methods — show all methods (including unexported for same-package types)
 	for name, m := range tm.Methods {
 		sig := formatMethodSig(m)
-		// Auto-insert parentheses
-		var insertText string
-		if len(m.ParamNames) == 0 {
-			insertText = name + "()"
-		} else {
-			insertText = name + "("
-		}
+		insertText, format := callInsertText(name, m.ParamNames, m.DefaultExprs, snippets)
 		items = append(items, withRef(lsp.CompletionItem{
-			Label:      name + sig,
-			Kind:       kindPtr(lsp.CompletionItemKindMethod),
-			Detail:     sig,
-			InsertText: insertText,
-			FilterText: name,
-			SortText:   name,
+			Label:            name + sig,
+			Kind:             kindPtr(lsp.CompletionItemKindMethod),
+			Detail:           sig,
+			InsertText:       insertText,
+			InsertTextFormat: format,
+			FilterText:       name,
+			SortText:         name,
 		}, completionRef{Kind: refKindMember, Key: ownerKey, Name: name}))
 	}
 
