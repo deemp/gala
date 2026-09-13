@@ -152,4 +152,5 @@ Every one converts a "write a test and hope" turn into a "read the compiler" tur
 - [Playground]({{ '/playground/' | relative_url }}) — run GALA in your browser, no install
 - [GALA vs Go]({{ '/vs-go/' | relative_url }}) — the same comparison across sum types, `Option`, immutability, and errors
 - [Getting Started]({{ '/getting-started/' | relative_url }}) — install and write your first program
+- [Claude Code plugin]({{ '/features/ide-support/#claude-code' | relative_url }}) — `gala lsp` diagnostics reach the agent after every edit, before any build
 - [Sealed Types]({{ '/features/sealed-types/' | relative_url }}) &middot; [Pattern Matching]({{ '/features/pattern-matching/' | relative_url }}) — the exhaustiveness that drives the loop

@@ -1,0 +1,9 @@
+{
+  "gala": {
+    "command": "gala",
+    "args": ["lsp"],
+    "extensionToLanguage": {
+      ".gala": "gala"
+    }
+  }
+}

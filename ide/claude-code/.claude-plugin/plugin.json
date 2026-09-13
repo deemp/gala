@@ -1,0 +1,11 @@
+{
+  "name": "gala",
+  "description": "GALA code intelligence: diagnostics after every edit, hover types, go-to-definition and references via `gala lsp`",
+  "author": {
+    "name": "Maksim Martianov",
+    "url": "https://github.com/martianoff"
+  },
+  "homepage": "https://gala.fyi/features/ide-support/",
+  "repository": "https://github.com/martianoff/gala",
+  "license": "Apache-2.0"
+}

@@ -24,6 +24,8 @@ runnable GALA project:
     gala.mod      module example.com/<name>  (override with --module)
     main.gala     "Hello, GALA!" program
     .gitignore    standard GALA build-output excludes
+    .claude/settings.json
+                  offers the GALA plugin for Claude Code
 
 Examples:
   gala new myapp                                   # module example.com/myapp
@@ -89,7 +91,23 @@ func validateProjectName(name string) error {
 	return nil
 }
 
-// scaffoldProject creates <dir>/ with gala.mod, main.gala, and .gitignore.
+// claudeSettingsContent registers the GALA plugin marketplace for Claude Code,
+// which then offers to install the plugin (diagnostics, hover and navigation
+// through `gala lsp`) once the user trusts the project folder.
+const claudeSettingsContent = `{
+  "extraKnownMarketplaces": {
+    "gala": {
+      "source": { "source": "github", "repo": "martianoff/gala" }
+    }
+  },
+  "enabledPlugins": {
+    "gala@gala": true
+  }
+}
+`
+
+// scaffoldProject creates <dir>/ with gala.mod, main.gala, .gitignore and
+// .claude/settings.json.
 func scaffoldProject(dir, modulePath string) error {
 	if err := os.Mkdir(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %q: %w", dir, err)
@@ -132,6 +150,14 @@ Thumbs.db
 `
 	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
 		return fmt.Errorf("failed to write .gitignore: %w", err)
+	}
+
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.Mkdir(claudeDir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory %q: %w", claudeDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(claudeSettingsContent), 0644); err != nil {
+		return fmt.Errorf("failed to write .claude/settings.json: %w", err)
 	}
 
 	return nil
