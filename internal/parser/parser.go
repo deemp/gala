@@ -131,6 +131,19 @@ var (
 	parserSharedDFA sharedDFA
 )
 
+// VisitTokens lexes input and calls visit with every token the lexer emits, in
+// order, stopping at EOF. Lexical errors are not reported.
+//
+// Like ParseLenient it is safe to call from several goroutines at once.
+func VisitTokens(input string, visit func(antlr.Token)) {
+	lexer := grammar.NewgalaLexer(antlr.NewInputStream(galaerr.StripBOM(input)))
+	isolateLexerCaches(lexer.BaseLexer)
+	lexer.RemoveErrorListeners()
+	for tok := lexer.NextToken(); tok.GetTokenType() != antlr.TokenEOF; tok = lexer.NextToken() {
+		visit(tok)
+	}
+}
+
 // isolateLexerCaches rebinds a lexer's ATN simulator to a per-parse
 // PredictionContextCache (the one piece the ANTLR runtime does not guard),
 // while keeping the shared, mutex-protected DFA set so concurrent lexing is

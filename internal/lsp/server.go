@@ -537,19 +537,31 @@ func (h *GalaHandler) ensureAnalysis(uri string, line, char int) {
 // typed at the cursor, or -1 when there is none.
 //
 // The dot may end an earlier line: a builder chain is written one call per
-// line with the dot trailing the previous one.
+// line with the dot trailing the previous one, possibly followed by a comment,
+// and with comment lines between links — the continuation flattenLogicalLine
+// follows.
 func memberDotOffset(text string, line, char int) int {
-	offset := lineCharToOffset(text, line, char)
-	if offset < 0 || offset > len(text) {
+	lines := strings.Split(text, "\n")
+	if line < 0 || line >= len(lines) {
 		return -1
 	}
-	for offset > 0 && isIdentChar(text[offset-1]) {
-		offset--
+	char = min(max(char, 0), len(lines[line]))
+	for char > 0 && isIdentChar(lines[line][char-1]) {
+		char--
 	}
-	if dot := skipTrailingWhitespace(text, offset-1); dot >= 0 && text[dot] == '.' {
-		return dot
+	before := strings.TrimRight(lines[line][:char], " \t")
+	for before == "" {
+		line--
+		if line < 0 || strings.TrimSpace(lines[line]) == "" {
+			return -1
+		}
+		// A comment-only line trims to nothing and the walk goes on upwards.
+		before = strings.TrimRight(stripLineComment(lines[line]), " \t\r")
 	}
-	return -1
+	if !strings.HasSuffix(before, ".") {
+		return -1
+	}
+	return lineCharToOffset(text, line, len(before)-1)
 }
 
 // ensureAnalysisForSignature is the analog of ensureAnalysis for

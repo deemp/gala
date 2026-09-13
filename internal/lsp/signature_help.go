@@ -7,6 +7,7 @@ import (
 	"github.com/antlr4-go/antlr/v4"
 	"github.com/owenrumney/go-lsp/lsp"
 
+	"martianoff/gala/internal/parser"
 	grammar "martianoff/gala/internal/parser/grammar"
 	"martianoff/gala/internal/transpiler"
 )
@@ -145,10 +146,26 @@ func patchTextForSignature(text string, line, char int) (patched string, cursorO
 		return "", -1
 	}
 	offset := lineCharToOffset(text, line, min(max(char, 0), len(lines[line])))
-	if netParens(text) <= 0 {
+	if unclosedParens(text) <= 0 {
 		return text, offset
 	}
 	return text[:offset] + ")" + text[offset:], offset
+}
+
+// unclosedParens is the number of `(` in text that no `)` closes, counted by
+// token so that parentheses in comments, strings and char literals do not
+// count.
+func unclosedParens(text string) int {
+	n := 0
+	parser.VisitTokens(text, func(tok antlr.Token) {
+		switch tok.GetText() {
+		case "(":
+			n++
+		case ")":
+			n--
+		}
+	})
+	return n
 }
 
 // lineCharToOffset converts an LSP (0-indexed line, 0-indexed char) to
