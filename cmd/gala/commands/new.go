@@ -25,7 +25,7 @@ runnable GALA project:
     main.gala     "Hello, GALA!" program
     .gitignore    standard GALA build-output excludes
     .claude/settings.json
-                  offers the GALA plugin for Claude Code
+                  enables the GALA plugin for Claude Code
 
 Examples:
   gala new myapp                                   # module example.com/myapp
@@ -91,8 +91,8 @@ func validateProjectName(name string) error {
 	return nil
 }
 
-// claudeSettingsContent registers the GALA plugin marketplace for Claude Code,
-// which then offers to install the plugin (diagnostics, hover and navigation
+// claudeSettingsContent declares the GALA plugin marketplace for Claude Code,
+// which installs and enables the plugin (diagnostics, hover and navigation
 // through `gala lsp`) once the user trusts the project folder.
 const claudeSettingsContent = `{
   "extraKnownMarketplaces": {

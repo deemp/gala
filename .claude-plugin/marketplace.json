@@ -9,7 +9,7 @@
     {
       "name": "gala",
       "source": "./ide/claude-code",
-      "description": "GALA code intelligence: diagnostics after every edit, hover types, go-to-definition and references via `gala lsp`",
+      "description": "GALA code intelligence for Claude Code via `gala lsp`: diagnostics after every edit, hover types, go-to-definition and references. Requires the GALA CLI (`gala`) installed and on PATH; the plugin does not include it.",
       "homepage": "https://gala.fyi/features/ide-support/",
       "repository": "https://github.com/martianoff/gala",
       "license": "Apache-2.0",

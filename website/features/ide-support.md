@@ -155,14 +155,16 @@ The GALA plugin connects [Claude Code](https://code.claude.com) to `gala lsp`, s
 - **Diagnostics after every edit.** Parse errors, non-exhaustive matches and other transpiler errors are pushed into Claude's context right after it changes a file, so it fixes them without running a build.
 - **Hover, go-to-definition and find references.** Claude looks up inferred types and declarations instead of guessing them.
 
-With `gala` on your PATH, run in Claude Code:
+The plugin starts the `gala` binary but does not include it. Install the GALA CLI first (see [Getting Started]({{ '/getting-started/' | relative_url }})) and check that `gala version` works in the terminal you start Claude Code from. Then run in Claude Code:
 
 ```
 /plugin marketplace add martianoff/gala
 /plugin install gala@gala
 ```
 
-Projects created with `gala new` include a `.claude/settings.json` that registers the marketplace, so Claude Code offers the plugin when you trust the project folder. Diagnostics cover what the GALA transpiler checks; errors that only the Go compiler finds in the generated code still need `gala build`.
+Projects created with `gala new` include a `.claude/settings.json` that declares the marketplace, so Claude Code installs and enables the plugin once you trust the project folder.
+
+If `gala` is not on the PATH, Claude's LSP tool fails with `Command 'gala' not found` and no GALA diagnostics reach it. Diagnostics cover what the GALA transpiler checks; errors that only the Go compiler finds in the generated code still need `gala build`. Full instructions: [ide/claude-code](https://github.com/martianoff/gala/tree/master/ide/claude-code).
 
 ### Verify
 

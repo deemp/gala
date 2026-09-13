@@ -1,10 +1,4 @@
 {
-  "extraKnownMarketplaces": {
-    "gala": {
-      "source": { "source": "github", "repo": "martianoff/gala" }
-    }
-  },
-  "enabledPlugins": {
-    "gala@gala": true
-  }
+  "enabledPlugins": {},
+  "extraKnownMarketplaces": {}
 }

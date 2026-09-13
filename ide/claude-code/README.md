@@ -1,5 +1,10 @@
 # GALA plugin for Claude Code
 
+> **Requires the GALA CLI.** This plugin only tells Claude Code to start
+> `gala lsp`. It does not include the `gala` binary. Install GALA and make sure
+> `gala version` works in the terminal you start Claude Code from before you
+> install the plugin.
+
 Connects [Claude Code](https://code.claude.com) to the GALA language server
 (`gala lsp`), so Claude works on `.gala` files with the same type information
 your editor has:
@@ -15,19 +20,28 @@ your editor has:
 
 ## Install
 
-1. Install the GALA CLI and put `gala` on your `PATH`
-   ([releases](https://github.com/martianoff/gala/releases)). The plugin starts
-   `gala lsp`; it does not bundle the binary.
-2. In Claude Code:
+1. **Install the GALA CLI** and put `gala` on your `PATH`: download a binary
+   from [releases](https://github.com/martianoff/gala/releases) or follow
+   [Getting Started](https://gala.fyi/getting-started/). Check it with:
+
+   ```
+   gala version
+   ```
+
+2. **Install the plugin** in Claude Code:
 
    ```
    /plugin marketplace add martianoff/gala
    /plugin install gala@gala
    ```
 
+   The same from a shell: `claude plugin marketplace add martianoff/gala` and
+   `claude plugin install gala@gala`.
+
 Projects created with `gala new` already contain a `.claude/settings.json` that
-registers this marketplace, so Claude Code offers the plugin when you trust the
-project folder. To add the same prompt to an existing project, put this in its
+declares this marketplace and enables the plugin. When you trust the project
+folder, Claude Code installs and enables the plugin on its own; you still need
+step 1. To do the same for an existing project, put this in its
 `.claude/settings.json`:
 
 ```json
@@ -45,15 +59,30 @@ project folder. To add the same prompt to an existing project, put this in its
 
 ## Check that it works
 
-Run `/plugin` and confirm `gala` is enabled with no entry in the **Errors** tab.
-`Executable not found in $PATH` means `gala` is not on the `PATH` Claude Code was
-started with. `claude --debug` logs the server's start-up line, which names the
-GALA version and the standard library directory it resolved.
+Ask Claude to hover a symbol in a `.gala` file, for example *"use the LSP tool to
+hover `Println` in main.gala"*. It should return the symbol's signature.
+
+If `gala` is missing from the `PATH` Claude Code was started with, the LSP tool
+fails with:
+
+```
+Command 'gala' not found or is in an unsafe location (current directory)
+```
+
+and Claude gets no GALA diagnostics. Install the CLI (step 1) and restart Claude
+Code.
+
+Starting Claude Code with `claude --debug` logs the server's start-up line,
+which names the GALA version and the standard library directory it resolved:
+
+```
+[gala-lsp] version=0.77.0 stdlib=/home/you/.gala/stdlib/v0.77.0
+```
 
 ## Limits
 
 - The server reports what the GALA transpiler detects. Errors that only the Go
   compiler finds in the generated code, such as adding a `float64` to a
   `string`, need `gala build` or `bazel build`.
-- Claude receives diagnostics on the tool call after the edit, not in the edit's
-  own result.
+- Claude receives diagnostics with the result of its next tool call after the
+  edit, not in the edit's own result.
