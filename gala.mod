@@ -1,3 +1,3 @@
 module martianoff/gala
 
-gala 0.76.2
+gala 0.77.0
