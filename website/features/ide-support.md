@@ -1,10 +1,10 @@
 ---
 layout: default
-title: "IDE Support — IntelliJ Plugin & LSP Server"
+title: "IDE Support — IntelliJ Plugin, LSP Server & Claude Code"
 description: "GALA's GoLand/IntelliJ plugin and LSP server provide syntax highlighting, type-aware code completion, inlay hints, and real-time diagnostics — including go-to-definition and completion into Go stdlib and third-party Go modules."
-keywords: "gala ide support, gala intellij plugin, gala goland plugin, gala lsp server, gala code completion, gala inlay hints, gala syntax highlighting, gala go to definition, gala go interop completion, gala vscode neovim lsp"
+keywords: "gala ide support, gala intellij plugin, gala goland plugin, gala lsp server, gala code completion, gala inlay hints, gala syntax highlighting, gala go to definition, gala go interop completion, gala vscode neovim lsp, gala claude code plugin"
 permalink: /features/ide-support/
-last_modified_at: 2026-07-26
+last_modified_at: 2026-09-13
 ---
 
 <div class="breadcrumb">
@@ -147,6 +147,24 @@ require('lspconfig.configs').gala = {
 }
 require('lspconfig').gala.setup({})
 ```
+
+### Claude Code
+
+The GALA plugin connects [Claude Code](https://code.claude.com) to `gala lsp`, so an AI agent editing `.gala` files uses the same analysis as your editor:
+
+- **Diagnostics after every edit.** Parse errors, non-exhaustive matches and other transpiler errors are pushed into Claude's context right after it changes a file, so it fixes them without running a build.
+- **Hover, go-to-definition and find references.** Claude looks up inferred types and declarations instead of guessing them.
+
+The plugin starts the `gala` binary but does not include it. Install the GALA CLI first (see [Getting Started]({{ '/getting-started/' | relative_url }})) and check that `gala version` works in the terminal you start Claude Code from. Then run in Claude Code:
+
+```
+/plugin marketplace add martianoff/gala
+/plugin install gala@gala
+```
+
+Projects created with `gala new` include a `.claude/settings.json` that declares the marketplace, so Claude Code installs and enables the plugin once you trust the project folder.
+
+If `gala` is not on the PATH, Claude's LSP tool fails with `Command 'gala' not found` and no GALA diagnostics reach it. Diagnostics cover what the GALA transpiler checks; errors that only the Go compiler finds in the generated code still need `gala build`. Full instructions: [ide/claude-code](https://github.com/martianoff/gala/tree/master/ide/claude-code).
 
 ### Verify
 

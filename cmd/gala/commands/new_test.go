@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,7 +45,7 @@ func TestScaffoldProject(t *testing.T) {
 	}
 
 	// Verify the three expected files exist.
-	expectedFiles := []string{"gala.mod", "main.gala", ".gitignore"}
+	expectedFiles := []string{"gala.mod", "main.gala", ".gitignore", filepath.Join(".claude", "settings.json")}
 	for _, f := range expectedFiles {
 		path := filepath.Join(projectDir, f)
 		info, err := os.Stat(path)
@@ -88,6 +89,32 @@ func TestScaffoldProject(t *testing.T) {
 	}
 	if !strings.Contains(string(giContent), ".gala/") {
 		t.Fatalf(".gitignore missing '.gala/' exclude:\n%s", string(giContent))
+	}
+
+	// Verify .claude/settings.json registers the GALA marketplace and enables
+	// its plugin, so Claude Code offers the plugin for the new project.
+	settingsContent, err := os.ReadFile(filepath.Join(projectDir, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatalf("read .claude/settings.json: %v", err)
+	}
+	var settings struct {
+		ExtraKnownMarketplaces map[string]struct {
+			Source struct {
+				Source string `json:"source"`
+				Repo   string `json:"repo"`
+			} `json:"source"`
+		} `json:"extraKnownMarketplaces"`
+		EnabledPlugins map[string]bool `json:"enabledPlugins"`
+	}
+	if err := json.Unmarshal(settingsContent, &settings); err != nil {
+		t.Fatalf(".claude/settings.json is not valid JSON: %v\n%s", err, string(settingsContent))
+	}
+	marketplace := settings.ExtraKnownMarketplaces["gala"].Source
+	if marketplace.Source != "github" || marketplace.Repo != "martianoff/gala" {
+		t.Fatalf(".claude/settings.json: gala marketplace source = %+v, want github martianoff/gala", marketplace)
+	}
+	if !settings.EnabledPlugins["gala@gala"] {
+		t.Fatalf(".claude/settings.json does not enable gala@gala:\n%s", string(settingsContent))
 	}
 }
 

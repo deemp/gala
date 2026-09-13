@@ -24,7 +24,9 @@ completion, inlay hints, and more.
 Usage with editors:
   GoLand/IntelliJ: Automatically started by the GALA plugin
   VS Code:         Configure as an LSP server with "gala lsp" command
-  Neovim:          Use lspconfig with cmd = {"gala", "lsp"}`,
+  Neovim:          Use lspconfig with cmd = {"gala", "lsp"}
+  Claude Code:     /plugin marketplace add martianoff/gala
+                   /plugin install gala@gala`,
 	Run: runLsp,
 }
 

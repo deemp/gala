@@ -604,6 +604,19 @@ require('lspconfig.configs').gala = {
 require('lspconfig').gala.setup({})
 ```
 
+### Claude Code
+
+The GALA plugin for [Claude Code](https://code.claude.com) connects Claude to `gala lsp`. Claude then gets diagnostics pushed into its context after every edit, and can look up hover types, definitions and references.
+
+The plugin starts the `gala` binary but does not include it: install the GALA CLI and check that `gala version` works first. Then, in Claude Code:
+
+```
+/plugin marketplace add martianoff/gala
+/plugin install gala@gala
+```
+
+Projects created with `gala new` include a `.claude/settings.json`, so Claude Code installs and enables the plugin once you trust the project folder. Details and troubleshooting: [ide/claude-code](ide/claude-code/README.md).
+
 ---
 
 ## Installation
