@@ -48,6 +48,7 @@ go_test(
         "hover_coverage_test.go",
         "hover_internal_test.go",
         "hover_variable_test.go",
+        "member_dot_internal_test.go",
         "repro_gala_mcp_test.go",
         "server_test.go",
         "signature_help_test.go",

@@ -45,22 +45,12 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 	// The parameters of the call whose next argument the caret begins.
 	var paramItems []lsp.CompletionItem
 	typed := ""
-	resolvedCall := false
 	if !isDot && richAST != nil {
-		if call, prefix := h.callAtArgumentStart(text, line, char); call != nil {
+		if call, prefix := h.callAtArgumentStart(uri, text, line, char); call != nil {
 			enclosingFunc := findEnclosingFunc(strings.Split(text, "\n"), line)
-			target := resolveCallTarget(call, enclosingFunc, richAST, varTypeMap)
-			resolvedCall = target != callTarget{}
-			paramItems = parameterCompletions(call, target)
+			paramItems = parameterCompletions(call, resolveCallTarget(call, enclosingFunc, richAST, varTypeMap))
 			typed = prefix
 		}
-	}
-	// Named arguments of a case constructor, which resolveCallTarget does not
-	// resolve. Empty whenever there are none, so the global list still answers
-	// for an argument being typed to any other exported call.
-	var caseArgs []lsp.CompletionItem
-	if !isDot && !resolvedCall && richAST != nil && isNamedArgContext(text, line, char) {
-		caseArgs = namedArgCompletions(richAST, extractConstructorName(text, line, char))
 	}
 
 	if isDot && richAST != nil {
@@ -82,8 +72,6 @@ func (h *GalaHandler) Completion(ctx context.Context, params *lsp.CompletionPara
 		} else {
 			items = append(items, globalCompletions(richAST, varTypeMap, snippets)...)
 		}
-	} else if len(caseArgs) > 0 {
-		items = append(items, caseArgs...)
 	} else if isMatchCaseContext(text, line, char) && richAST != nil {
 		matchedType := extractMatchSubjectType(text, line, richAST, varTypeMap)
 		items = append(items, matchCaseCompletions(richAST, matchedType)...)
@@ -187,7 +175,7 @@ func functionItem(fm *transpiler.FunctionMetadata, snippets bool) lsp.Completion
 		Detail: formatFuncSig(fm),
 	}
 	if snippets {
-		item.InsertText, item.InsertTextFormat = callInsertText(fm.Name, fm.ParamNames, fm.DefaultExprs, true)
+		item.InsertText, item.InsertTextFormat = callInsertText(fm.Name, fm.ParamNames, fm.DefaultExprs, snippets)
 	}
 	return item
 }
@@ -268,35 +256,6 @@ func packageCompletions(richAST *transpiler.RichAST, pkgName string, snippets bo
 	return items
 }
 
-func methodCompletions(richAST *transpiler.RichAST) []lsp.CompletionItem {
-	items := make([]lsp.CompletionItem, 0)
-	seen := make(map[string]bool)
-	for _, tm := range richAST.Types {
-		for name, m := range tm.Methods {
-			if !isExported(name) || seen[name] {
-				continue
-			}
-			seen[name] = true
-			sig := formatMethodSig(m)
-			var insertText string
-			if len(m.ParamNames) == 0 {
-				insertText = name + "()"
-			} else {
-				insertText = name + "("
-			}
-			items = append(items, lsp.CompletionItem{
-				Label:      name + sig,
-				Kind:       kindPtr(lsp.CompletionItemKindMethod),
-				Detail:     sig,
-				InsertText: insertText,
-				FilterText: name,
-				SortText:   name,
-			})
-		}
-	}
-	return items
-}
-
 func keywordCompletions() []lsp.CompletionItem {
 	keywords := []string{
 		"package", "import", "val", "var", "bind", "also", "use", "func", "type", "struct",
@@ -328,130 +287,6 @@ func keywordCompletions() []lsp.CompletionItem {
 		}
 		items = append(items, lsp.CompletionItem{Label: fn, Kind: kindPtr(lsp.CompletionItemKindFunction), Detail: "builtin"})
 	}
-	return items
-}
-
-// --- Named Arg Completion ---
-
-func isNamedArgContext(text string, line, char int) bool {
-	lines := strings.Split(text, "\n")
-	if line >= len(lines) {
-		return false
-	}
-	l := lines[line]
-	if char > len(l) {
-		char = len(l)
-	}
-	depth := 0
-	for i := char - 1; i >= 0; i-- {
-		if l[i] == ')' {
-			depth++
-		} else if l[i] == '(' {
-			if depth == 0 {
-				j := i - 1
-				for j >= 0 && (isIdentChar(l[j]) || l[j] == '[' || l[j] == ']') {
-					j--
-				}
-				name := l[j+1 : i]
-				if idx := strings.Index(name, "["); idx >= 0 {
-					name = name[:idx]
-				}
-				return isExported(name)
-			}
-			depth--
-		}
-	}
-	return false
-}
-
-func extractConstructorName(text string, line, char int) string {
-	lines := strings.Split(text, "\n")
-	if line >= len(lines) {
-		return ""
-	}
-	l := lines[line]
-	if char > len(l) {
-		char = len(l)
-	}
-	depth := 0
-	for i := char - 1; i >= 0; i-- {
-		if l[i] == ')' {
-			depth++
-		} else if l[i] == '(' {
-			if depth == 0 {
-				j := i - 1
-				for j >= 0 && (isIdentChar(l[j]) || l[j] == '[' || l[j] == ']') {
-					j--
-				}
-				name := l[j+1 : i]
-				if idx := strings.Index(name, "["); idx >= 0 {
-					name = name[:idx]
-				}
-				return name
-			}
-			depth--
-		}
-	}
-	return ""
-}
-
-func namedArgCompletions(richAST *transpiler.RichAST, typeName string) []lsp.CompletionItem {
-	items := make([]lsp.CompletionItem, 0)
-	if typeName == "" {
-		return items
-	}
-
-	// Check regular struct fields
-	for key, tm := range richAST.Types {
-		name := tm.Name
-		if name == "" {
-			if idx := strings.LastIndex(key, "."); idx >= 0 {
-				name = key[idx+1:]
-			}
-		}
-		if name != typeName {
-			continue
-		}
-		for _, fn := range tm.FieldNames {
-			ft := tm.Fields[fn]
-			insertText := fn + " = "
-			items = append(items, withRef(lsp.CompletionItem{
-				Label:      fn,
-				Kind:       kindPtr(lsp.CompletionItemKindField),
-				Detail:     ft.String(),
-				InsertText: insertText,
-			}, completionRef{Kind: refKindMember, Key: key, Name: fn}))
-		}
-		if len(items) > 0 {
-			return items
-		}
-	}
-
-	// Check sealed case fields — e.g., Circle(radius = ...)
-	for _, tm := range richAST.Types {
-		if !tm.IsSealed {
-			continue
-		}
-		for _, v := range tm.SealedVariants {
-			if v.Name == typeName {
-				for i, fn := range v.FieldNames {
-					detail := ""
-					if i < len(v.FieldTypes) {
-						detail = v.FieldTypes[i].String()
-					}
-					insertText := fn + " = "
-					items = append(items, lsp.CompletionItem{
-						Label:      fn,
-						Kind:       kindPtr(lsp.CompletionItemKindField),
-						Detail:     cleanGoTypeForDisplay(detail),
-						InsertText: insertText,
-					})
-				}
-				return items
-			}
-		}
-	}
-
 	return items
 }
 

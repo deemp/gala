@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/owenrumney/go-lsp/lsp"
@@ -15,7 +16,7 @@ import (
 //
 // The call is found the way signature help finds it (findCallAtCaret), so an
 // argument list still being typed resolves.
-func (h *GalaHandler) callAtArgumentStart(text string, line, char int) (call *callContext, typed string) {
+func (h *GalaHandler) callAtArgumentStart(uri, text string, line, char int) (call *callContext, typed string) {
 	offset := lineCharToOffset(text, line, char)
 	if offset < 0 || offset > len(text) {
 		return nil, ""
@@ -24,18 +25,14 @@ func (h *GalaHandler) callAtArgumentStart(text string, line, char int) (call *ca
 	for start > 0 && isIdentChar(text[start-1]) {
 		start--
 	}
-	sep := start - 1
-	for sep >= 0 && strings.IndexByte(" \t\r\n", text[sep]) >= 0 {
-		sep--
-	}
+	sep := skipTrailingWhitespace(text, start-1)
 	if sep < 0 || (text[sep] != '(' && text[sep] != ',') {
 		return nil, ""
 	}
-
-	// The call may be found in a copy closed at the caret; that only inserts
-	// at the caret, so the separator's offset is the same in both texts.
-	call = h.findCallAtCaret(text, line, char)
-	if call == nil || !call.argStarts[sep] {
+	// A `)` closing the call is only ever inserted at the caret, so the
+	// separator's offset is the same in the text the call was found in.
+	call = h.findCallAtCaret(uri, text, line, char)
+	if call == nil || !slices.Contains(call.argStarts, sep) {
 		return nil, ""
 	}
 	return call, text[start:offset]
@@ -55,8 +52,28 @@ func (t callTarget) parameters() (names []string, types []transpiler.Type, defau
 			types = append(types, t.typ.Fields[fn])
 		}
 		return t.typ.FieldNames, types, nil
+	case t.variant != nil:
+		return t.variant.FieldNames, t.variant.FieldTypes, nil
 	}
 	return nil, nil, nil
+}
+
+// doc and fieldDocs are a constructor target's own doc comment and its fields'.
+func (t callTarget) doc() string {
+	switch {
+	case t.typ != nil:
+		return t.typ.Doc
+	case t.variant != nil:
+		return t.variant.Doc
+	}
+	return ""
+}
+
+func (t callTarget) fieldDocs() map[string]string {
+	if t.typ != nil {
+		return t.typ.FieldDocs
+	}
+	return nil
 }
 
 // parameterCompletions offers the parameters of a call that are not given yet,
@@ -76,13 +93,19 @@ func parameterCompletions(call *callContext, target callTarget) []lsp.Completion
 		if def, ok := defaults[i]; ok {
 			detail += " = " + def
 		}
-		items = append(items, lsp.CompletionItem{
+		item := lsp.CompletionItem{
 			Label:      name,
 			Kind:       kindPtr(lsp.CompletionItemKindField),
 			Detail:     strings.TrimSpace(detail),
 			InsertText: name + " = ",
 			SortText:   fmt.Sprintf("0%04d", i),
-		})
+		}
+		if target.typ != nil {
+			// A struct field's doc comment is attached on resolve, as for the
+			// same field after a dot.
+			item = withRef(item, completionRef{Kind: refKindMember, Key: typeKey(target.typ), Name: name})
+		}
+		items = append(items, item)
 	}
 	return items
 }

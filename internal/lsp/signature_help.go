@@ -49,7 +49,7 @@ func (h *GalaHandler) SignatureHelp(ctx context.Context, params *lsp.SignatureHe
 		return nil, nil
 	}
 
-	call := h.findCallAtCaret(text, line, char)
+	call := h.findCallAtCaret(uri, text, line, char)
 	if call == nil {
 		return nil, nil
 	}
@@ -93,8 +93,8 @@ type callContext struct {
 	// in, counted from structural commas in the argumentList.
 	argIndex int
 	// argStarts holds the offsets of this call's own `(` and top-level
-	// commas — the points after which a new argument begins.
-	argStarts map[int]bool
+	// commas, in order — the points after which a new argument begins.
+	argStarts []int
 	// named holds the names of arguments already passed by name, and
 	// positional counts the positional ones before the cursor; neither
 	// includes the argument the cursor is in.
@@ -102,40 +102,37 @@ type callContext struct {
 	positional int
 }
 
-// findCallAtCaret finds the call whose argument list holds the caret.
+// findCallAtCaret finds the call whose argument list holds the caret, in the
+// document as patchTextForSignature leaves it.
 //
-// The tree is always parsed fresh rather than read back from h.parseTrees,
-// which may come from another caret's patched text, or from an error-recovered
-// tree whose offsets do not line up with this one.
-//
-// The document is tried closed at the caret first: an argument list still
-// being typed has no `)`, and ANTLR produces no call without one. When that
-// finds nothing, it is tried as it stands — editors insert the `)` as the `(`
-// is typed, and closing an already closed call a second time breaks it, so
-// `WithName(|)` resolved to nothing.
-func (h *GalaHandler) findCallAtCaret(text string, line, char int) *callContext {
-	if patched, offset := patchTextForSignature(text, line, char); offset >= 0 {
-		if tree, _, _ := h.parser.ParseLenient(patched); tree != nil {
-			if call := findCallAtOffset(tree, patched, offset); call != nil {
-				return call
-			}
-		}
-	}
-	offset := lineCharToOffset(text, line, char)
+// The tree parsed for the document's latest analysis is reused when it was
+// parsed from exactly that text; any other tree — another caret's patch, an
+// older edit — would put the call at the wrong offsets.
+func (h *GalaHandler) findCallAtCaret(uri, text string, line, char int) *callContext {
+	src, offset := patchTextForSignature(text, line, char)
 	if offset < 0 {
 		return nil
 	}
-	tree, _, _ := h.parser.ParseLenient(text)
-	if tree == nil {
-		return nil
+	h.mu.Lock()
+	tree := h.parseTrees[uri]
+	if h.parseTexts[uri] != src {
+		tree = nil
 	}
-	return findCallAtOffset(tree, text, offset)
+	h.mu.Unlock()
+	if tree == nil {
+		if tree, _, _ = h.parser.ParseLenient(src); tree == nil {
+			return nil
+		}
+	}
+	return findCallAtOffset(tree, src, offset)
 }
 
-// patchTextForSignature inserts a closing `)` at the cursor so the call
-// the user is typing can be parsed to completion. Returns the patched
-// text and the cursor's byte offset inside it (which, by construction,
-// equals the offset of the inserted `)`).
+// patchTextForSignature closes the call the user is typing with a `)` at the
+// cursor when the document's parentheses do not balance, so ANTLR can produce
+// the call. Returns the text and the cursor's byte offset in it.
+//
+// A balanced document is left alone: editors insert the `)` as the `(` is
+// typed, and closing `WithName(|)` a second time breaks the parse.
 //
 // Everything on either side of the cursor is preserved verbatim — no
 // whitespace or comma trimming — so that (a) the grammar's trailing
@@ -147,17 +144,11 @@ func patchTextForSignature(text string, line, char int) (patched string, cursorO
 	if line < 0 || line >= len(lines) {
 		return "", -1
 	}
-	l := lines[line]
-	if char < 0 {
-		char = 0
+	offset := lineCharToOffset(text, line, min(max(char, 0), len(lines[line])))
+	if netParens(text) <= 0 {
+		return text, offset
 	}
-	if char > len(l) {
-		char = len(l)
-	}
-	lines[line] = l[:char] + ")" + l[char:]
-	patched = strings.Join(lines, "\n")
-	cursorOffset = lineCharToOffset(patched, line, char)
-	return patched, cursorOffset
+	return text[:offset] + ")" + text[offset:], offset
 }
 
 // lineCharToOffset converts an LSP (0-indexed line, 0-indexed char) to
@@ -320,21 +311,27 @@ func buildCallContext(callSuffix *grammar.PostfixSuffixContext, parent *grammar.
 	call := &callContext{
 		name:          name,
 		receiverChain: receiverChain,
-		argIndex:      argIndexAt(callSuffix.ArgumentList(), cursorOffset),
-		argStarts:     map[int]bool{},
 		named:         map[string]bool{},
 	}
 	if open := findChildTerminal(callSuffix, "("); open != nil {
-		call.argStarts[open.GetSymbol().GetStart()] = true
+		call.argStarts = append(call.argStarts, open.GetSymbol().GetStart())
 	}
 	argList, _ := callSuffix.ArgumentList().(*grammar.ArgumentListContext)
+	if argList != nil {
+		for _, child := range argList.GetChildren() {
+			if term, ok := child.(antlr.TerminalNode); ok && term.GetText() == "," {
+				call.argStarts = append(call.argStarts, term.GetSymbol().GetStart())
+			}
+		}
+	}
+	// The active argument follows the last separator before the cursor.
+	for _, sep := range call.argStarts[min(1, len(call.argStarts)):] {
+		if sep < cursorOffset {
+			call.argIndex++
+		}
+	}
 	if argList == nil {
 		return call
-	}
-	for _, child := range argList.GetChildren() {
-		if term, ok := child.(antlr.TerminalNode); ok && term.GetText() == "," {
-			call.argStarts[term.GetSymbol().GetStart()] = true
-		}
 	}
 	for _, a := range argList.AllArgument() {
 		arg, ok := a.(*grammar.ArgumentContext)
@@ -380,33 +377,6 @@ func contextText(ctx antlr.RuleContext, text string) string {
 	return text[s : e+1]
 }
 
-// argIndexAt counts the commas that are direct children of argumentList
-// (i.e. top-level commas for this call) and end strictly before the
-// cursor. Returns the zero-based active-argument index.
-func argIndexAt(argList grammar.IArgumentListContext, cursorOffset int) int {
-	if argList == nil {
-		return 0
-	}
-	rc, ok := argList.(antlr.RuleContext)
-	if !ok {
-		return 0
-	}
-	n := 0
-	for _, child := range rc.GetChildren() {
-		term, ok := child.(antlr.TerminalNode)
-		if !ok {
-			continue
-		}
-		if term.GetText() != "," {
-			continue
-		}
-		if term.GetSymbol().GetStart() < cursorOffset {
-			n++
-		}
-	}
-	return n
-}
-
 func isIdentifier(s string) bool {
 	if s == "" {
 		return false
@@ -434,8 +404,9 @@ func resolveCallSignature(call *callContext, enclosingFunc string, richAST *tran
 		return functionSignature(call.name, target.fn)
 	case target.method != nil:
 		return methodSignature(call.name, target.method)
-	case target.typ != nil:
-		return typeConstructorSignature(call.name, target.typ)
+	case target.typ != nil, target.variant != nil:
+		names, types, _ := target.parameters()
+		return constructorSignature(call.name, names, types, target.doc(), target.fieldDocs())
 	}
 	return nil
 }
@@ -444,15 +415,18 @@ func resolveCallSignature(call *callContext, enclosingFunc string, richAST *tran
 type callTarget struct {
 	fn     *transpiler.FunctionMetadata
 	method *transpiler.MethodMetadata
-	typ    *transpiler.TypeMetadata // a constructor call, whose parameters are the fields
+	// A constructor call, whose parameters are the fields: of a struct, or of
+	// a sealed type's case.
+	typ     *transpiler.TypeMetadata
+	variant *transpiler.SealedVariant
 }
 
 // resolveCallTarget looks up the callee of a callContext in richAST. Supports:
 //   - Bare function calls (`foo(`) → richAST.Functions[name]
 //   - Method calls on a receiver expression (`expr.foo(`) → resolve receiver
 //     type via resolveChainTypeN, then find Methods[name] on that type
-//   - Constructor-like calls on types (`Type(`) → the type's fields, treated
-//     as its parameter list
+//   - Constructor calls (`Type(`, `Case(`) → the struct's or the sealed
+//     case's fields, treated as its parameter list
 func resolveCallTarget(call *callContext, enclosingFunc string, richAST *transpiler.RichAST, varTypes map[string]string) callTarget {
 	// Method call on a receiver expression.
 	if call.receiverChain != "" {
@@ -467,12 +441,11 @@ func resolveCallTarget(call *callContext, enclosingFunc string, richAST *transpi
 			switch m := lookupPackageMember(richAST, pkg, call.name); {
 			case m.Func != nil:
 				return callTarget{fn: m.Func}
+			case m.Variant != nil:
+				return callTarget{variant: m.Variant}
 			case m.Type != nil && len(m.Type.FieldNames) > 0:
 				return callTarget{typ: m.Type}
 			}
-			// A case constructor, or nothing at all, falls through: the
-			// companion type the transpiler generates for a case is what
-			// answers for it below.
 		}
 		if receiverType != "" {
 			if tm := findType(richAST, receiverType); tm != nil {
@@ -497,6 +470,12 @@ func resolveCallTarget(call *callContext, enclosingFunc string, richAST *transpi
 	// useful hint text too.
 	if tm := findType(richAST, call.name); tm != nil && len(tm.FieldNames) > 0 {
 		return callTarget{typ: tm}
+	}
+	// Sealed case constructor: `Circle(radius = 1.0)`. The companion type the
+	// transpiler generates for a case records no fields, so the case itself
+	// answers.
+	if v, _ := findSealedVariant(richAST, call.name, richAST.PackageName); v != nil {
+		return callTarget{variant: v}
 	}
 
 	return callTarget{}
@@ -540,21 +519,18 @@ func methodSignature(name string, m *transpiler.MethodMetadata) *lsp.SignatureIn
 	}
 }
 
-func typeConstructorSignature(name string, tm *transpiler.TypeMetadata) *lsp.SignatureInformation {
-	types := make([]transpiler.Type, 0, len(tm.FieldNames))
-	for _, fn := range tm.FieldNames {
-		types = append(types, tm.Fields[fn])
-	}
-	// A constructor's parameters are its type's fields, and each field carries its
-	// own doc comment — so the type comment needs no parameter lines, and running
-	// splitDoc over it would risk stealing a "Note:"-style line out of the
-	// summary whenever its label happened to match a field name.
-	params, labels := buildParamList(tm.FieldNames, types, tm.FieldDocs)
-	var label strings.Builder
-	label.WriteString(name + "(" + strings.Join(labels, ", ") + ")")
+// constructorSignature is the signature of a constructor call, whose parameters
+// are the constructed value's fields.
+//
+// Each field carries its own doc comment — so the type comment needs no
+// parameter lines, and running splitDoc over it would risk stealing a
+// "Note:"-style line out of the summary whenever its label happened to match a
+// field name.
+func constructorSignature(name string, fields []string, types []transpiler.Type, doc string, fieldDocs map[string]string) *lsp.SignatureInformation {
+	params, labels := buildParamList(fields, types, fieldDocs)
 	return &lsp.SignatureInformation{
-		Label:         label.String(),
-		Documentation: markdown(tm.Doc),
+		Label:         name + "(" + strings.Join(labels, ", ") + ")",
+		Documentation: markdown(doc),
 		Parameters:    params,
 	}
 }
