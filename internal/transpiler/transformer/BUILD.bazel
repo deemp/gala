@@ -75,6 +75,7 @@ go_test(
         "codec_boundary_test.go",
         "collect_partial_function_test.go",
         "collection_default_param_test.go",
+        "generic_method_named_args_test.go",
         "compilation_gate_test.go",
         "concurrency_check_test.go",
         "conflict_test.go",

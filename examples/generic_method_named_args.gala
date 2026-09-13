@@ -1,0 +1,54 @@
+package main
+
+import . "martianoff/gala/collection_immutable"
+
+// A generic method — one with type parameters of its own — binds named
+// arguments by name and fills omitted defaults, exactly as a non-generic
+// method does. Generic methods lower to standalone functions, a separate
+// path through the transpiler that used to bind every argument by position.
+
+type Box struct {
+    val n int
+}
+
+func (b Box) Fold[T any](initial T, f func(T, int) T) T = f(initial, b.n)
+
+func (b Box) Pick[T any](first T, second T, useSecond bool = false) T = if (useSecond) second else first
+
+func (b Box) Label[T any](value T, prefix string = "#", times int = 1) string {
+    var out = ""
+    for i := 0; i < times; i = i + 1 {
+        out = out + s"$prefix$value"
+    }
+    return out
+}
+
+type Wrapper[T any] struct {
+    val value T
+}
+
+func (w Wrapper[T]) Convert[U any](f func(T) U, fallback U) U = f(w.value)
+
+func main() {
+    val b = Box(n = 3)
+
+    // Named arguments in declaration order and reversed.
+    Println(b.Fold(initial = 10, f = (acc, x) => acc + x))
+    Println(b.Fold(f = (acc, x) => acc * x, initial = 2))
+
+    // Omitted default, positionally and by name.
+    Println(b.Pick("a", "b"))
+    Println(b.Pick(second = "b", first = "a"))
+    Println(b.Pick(second = "b", first = "a", useSecond = true))
+
+    // Positional then named, skipping a default in the middle.
+    Println(b.Label(7, times = 3))
+    Println(b.Label(value = true, prefix = "@"))
+
+    // Generic method on a generic receiver.
+    val w = Wrapper[int](value = 21)
+    Println(w.Convert(fallback = "", f = (v) => s"${v * 2}"))
+
+    // A standard-library generic method.
+    Println(ArrayOf(1, 2, 3).FoldLeft(f = (acc, x) => acc + x, initial = 100))
+}

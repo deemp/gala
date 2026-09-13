@@ -1,6 +1,7 @@
 package lsp_test
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -103,13 +104,22 @@ func Run() {
 // waits for the import to be analyzed.
 func openChainProject(t *testing.T, mainSrc string) (*servertest.Harness, lsp.DocumentURI) {
 	t.Helper()
+	return openChainProjectAs(t, mainSrc, lsp.ClientCapabilities{})
+}
+
+// openChainProjectAs is openChainProject for a client declaring caps.
+func openChainProjectAs(t *testing.T, mainSrc string, caps lsp.ClientCapabilities) (*servertest.Harness, lsp.DocumentURI) {
+	t.Helper()
 	root := createTestProject(t, []testProjectFile{
 		{Name: "gala.mod", Src: "module github.com/example/kv\n\ngala 0.76.0\n"},
 		{Name: "internal/srv/server.gala", Src: chainServerSrc},
 		{Name: "app/main.gala", Src: mainSrc},
 	})
 	h, handler := newHarnessWithHandler(t)
-	initializeAtRoot(t, handler, root)
+	rootURI := fileURIForPath(root)
+	if _, err := handler.Initialize(context.Background(), &lsp.InitializeParams{RootURI: &rootURI, Capabilities: caps}); err != nil {
+		t.Fatal(err)
+	}
 	uri := openProjectFile(t, h, root, "app/main.gala")
 	settle(t, h, uri, mainSrc, "srv.NewServer()", "NewServer")
 	return h, uri

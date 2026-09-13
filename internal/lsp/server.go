@@ -60,6 +60,9 @@ type GalaHandler struct {
 	goSrcDirs        map[string]string // Go module import-path prefix -> on-disk .go source dir (third-party deps)
 	moduleRoots      []moduleRoot      // modules whose packages this project can import, from gala.mod
 	client           *golsp.Client     // LSP client for sending notifications
+	// snippetSupport is whether the client accepts snippet insert text in
+	// completion items (tab stops such as `$1`), from Initialize.
+	snippetSupport bool
 
 	mu              sync.Mutex
 	documents       map[string]string              // URI -> source text
@@ -154,6 +157,12 @@ func NewGalaHandler() *GalaHandler {
 func (h *GalaHandler) Initialize(ctx context.Context, params *lsp.InitializeParams) (*lsp.InitializeResult, error) {
 	if params.RootURI != nil {
 		h.rootPath = uriToPath(string(*params.RootURI))
+	}
+	if td := params.Capabilities.TextDocument; td != nil && td.Completion != nil &&
+		td.Completion.CompletionItem != nil && td.Completion.CompletionItem.SnippetSupport != nil {
+		h.mu.Lock()
+		h.snippetSupport = *td.Completion.CompletionItem.SnippetSupport
+		h.mu.Unlock()
 	}
 
 	fmt.Fprintf(os.Stderr, "[gala-lsp] Initialize rootPath=%s extraSearchPaths=%v\n", h.rootPath, h.extraSearchPaths)
@@ -516,42 +525,50 @@ func (h *GalaHandler) ensureAnalysis(uri string, line, char int) {
 		return
 	}
 
-	lines := strings.Split(text, "\n")
-	if line >= len(lines) {
+	dot := memberDotOffset(text, line, char)
+	if dot < 0 {
 		return
 	}
-	l := lines[line]
-
-	// Find the dot at or just before the cursor and remove it.
-	dotPos := -1
-	if char > 0 && char <= len(l) && l[char-1] == '.' {
-		dotPos = char - 1
-	} else {
-		// Walk back past partial identifier to find the dot
-		i := char - 1
-		for i >= 0 && i < len(l) && isIdentChar(l[i]) {
-			i--
-		}
-		if i >= 0 && i < len(l) && l[i] == '.' {
-			dotPos = i
-		}
-	}
-	if dotPos < 0 {
-		return
-	}
-
 	// Remove just the dot, producing e.g. "Text(\"hello\")" from "Text(\"hello\")."
-	lines[line] = l[:dotPos] + l[dotPos+1:]
-	cleanText := strings.Join(lines, "\n")
-	h.analyzeAndCache(uri, cleanText, "ensureAnalysis")
+	h.analyzeAndCache(uri, text[:dot]+text[dot+1:], "ensureAnalysis")
+}
+
+// memberDotOffset returns the offset of the dot selecting the member being
+// typed at the cursor, or -1 when there is none.
+//
+// The dot may end an earlier line: a builder chain is written one call per
+// line with the dot trailing the previous one, possibly followed by a comment,
+// and with comment lines between links — the continuation flattenLogicalLine
+// follows.
+func memberDotOffset(text string, line, char int) int {
+	lines := strings.Split(text, "\n")
+	if line < 0 || line >= len(lines) {
+		return -1
+	}
+	char = min(max(char, 0), len(lines[line]))
+	for char > 0 && isIdentChar(lines[line][char-1]) {
+		char--
+	}
+	before := strings.TrimRight(lines[line][:char], " \t")
+	for before == "" {
+		line--
+		if line < 0 || strings.TrimSpace(lines[line]) == "" {
+			return -1
+		}
+		// A comment-only line trims to nothing and the walk goes on upwards.
+		before = strings.TrimRight(stripLineComment(lines[line]), " \t\r")
+	}
+	if !strings.HasSuffix(before, ".") {
+		return -1
+	}
+	return lineCharToOffset(text, line, len(before)-1)
 }
 
 // ensureAnalysisForSignature is the analog of ensureAnalysis for
 // textDocument/signatureHelp. The user's cursor is inside a call that
-// hasn't been closed yet (`foo(` or `foo(a,`), so the raw document
-// usually fails to parse. We close the call by inserting a matching `)`
-// at the cursor — producing a syntactically valid version — then run
-// the normal parse + analyze pipeline and cache the result.
+// may not be closed yet (`foo(` or `foo(a,`), in which case the raw
+// document fails to parse; patchTextForSignature closes it at the cursor,
+// and the normal parse + analyze pipeline runs on the result, which is cached.
 func (h *GalaHandler) ensureAnalysisForSignature(uri string, line, char int) {
 	h.mu.Lock()
 	hasVarTypes := hasResolvedVarType(h.varTypes[uri])
@@ -565,25 +582,11 @@ func (h *GalaHandler) ensureAnalysisForSignature(uri string, line, char int) {
 	if text == "" {
 		return
 	}
-	lines := strings.Split(text, "\n")
-	if line >= len(lines) {
-		return
+	// The same text the call is then looked up in, so the analysis and the
+	// tree walk agree on the document.
+	if cleanText, offset := patchTextForSignature(text, line, char); offset >= 0 {
+		h.analyzeAndCache(uri, cleanText, "ensureAnalysisForSignature")
 	}
-	l := lines[line]
-	if char > len(l) {
-		char = len(l)
-	}
-	// Insert a closing `)` at the cursor to balance the open call. We
-	// keep the original text on both sides of the cursor verbatim — no
-	// trimming of trailing whitespace or commas — so cursor byte offsets
-	// survive the patch unchanged and the grammar's trailing-comma
-	// allowance (`argumentList: argument (',' argument)* ','?`) lets
-	// `foo(a, )` parse cleanly while preserving the comma count that
-	// signature help uses for the active-parameter index.
-	patched := l[:char] + ")" + l[char:]
-	lines[line] = patched
-	cleanText := strings.Join(lines, "\n")
-	h.analyzeAndCache(uri, cleanText, "ensureAnalysisForSignature")
 }
 
 // analyzeAndCache parses + analyzes + runs the transformer on the given
