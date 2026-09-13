@@ -253,7 +253,7 @@ divide(divisor = 4, dividend = 20)  // 5 — reordered to divide(20, 4)
 divide(20, 4)                        // 5 — positional works too
 ```
 
-Named arguments work with struct construction, `Copy()` method overrides, and regular function calls.
+Named arguments work with struct construction, `Copy()` method overrides, function calls and method calls — including methods with type parameters of their own, such as `arr.FoldLeft(initial = 0, f = (acc, x) => acc + x)`.
 
 ### Default Parameter Values
 

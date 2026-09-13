@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/token"
+	"slices"
 	"strings"
 
 	"github.com/antlr4-go/antlr/v4"
@@ -523,6 +524,13 @@ func (t *galaASTTransformer) tryTransformGenericMethodAsFunction(
 		}
 	}
 
+	// The arguments in parameter order: named ones moved to their parameter,
+	// and a nil slot for each parameter left to its default.
+	slots, err := bindMethodArguments(argListCtx, methodMeta)
+	if err != nil {
+		return true, nil, err
+	}
+
 	// Try to infer unresolved method type params from non-lambda arguments.
 	// This enables FoldLeft(0, (acc, x) => acc + x) to infer U=int from the zero value 0.
 	preTransformed := make(map[int]ast.Expr)
@@ -531,11 +539,13 @@ func (t *galaASTTransformer) tryTransformGenericMethodAsFunction(
 		for _, a := range recvTypeArgStrings {
 			recvTypeArgTypes = append(recvTypeArgTypes, transpiler.ParseType(a))
 		}
-		for i, argCtx := range argListCtx.AllArgument() {
+		for i, arg := range slots {
 			if i >= len(methodMeta.ParamTypes) {
 				break
 			}
-			arg := argCtx.(*grammar.ArgumentContext)
+			if arg == nil {
+				continue
+			}
 			exprCtx, lambdaCtx, _, extractErr := extractArgContent(arg)
 			if extractErr != nil {
 				continue
@@ -661,8 +671,15 @@ func (t *galaASTTransformer) tryTransformGenericMethodAsFunction(
 		}
 		return view
 	}
-	for i, argCtx := range argListCtx.AllArgument() {
-		arg := argCtx.(*grammar.ArgumentContext)
+	for i, arg := range slots {
+		if arg == nil {
+			expr, derr := t.methodDefaultArg(methodMeta, i, receiver, recvType.BaseName())
+			if derr != nil {
+				return true, nil, derr
+			}
+			mArgs = append(mArgs, expr)
+			continue
+		}
 		exprCtx, lambdaCtx, isSpread, extractErr := extractArgContent(arg)
 		if extractErr != nil {
 			return true, nil, extractErr
@@ -743,6 +760,85 @@ func (t *galaASTTransformer) tryTransformGenericMethodAsFunction(
 	}
 
 	return true, t.emitGenericMethodFreeFunc(method, receiver, recvType, lookupBaseName, typeArgs, methodMeta, mArgs, hasSpread), nil
+}
+
+// bindMethodArguments lays a call's arguments out in the method's parameter
+// order: positional arguments first, in order, then each named argument in its
+// parameter's slot. A nil slot is a parameter the call omits, which must have a
+// default.
+//
+// Without metadata, or for a call of only positional arguments that omits none
+// — including one spreading into a variadic parameter — the arguments are
+// returned as written.
+func bindMethodArguments(argListCtx *grammar.ArgumentListContext, methodMeta *transpiler.MethodMetadata) ([]*grammar.ArgumentContext, error) {
+	var args []*grammar.ArgumentContext
+	named := false
+	if argListCtx != nil {
+		for _, a := range argListCtx.AllArgument() {
+			arg := a.(*grammar.ArgumentContext)
+			args = append(args, arg)
+			named = named || arg.Identifier() != nil
+		}
+	}
+	if methodMeta == nil || (!named && len(args) >= len(methodMeta.ParamTypes)) {
+		return args, nil
+	}
+
+	line, col := 0, 0
+	if argListCtx != nil {
+		line, col = argListCtx.GetStart().GetLine(), argListCtx.GetStart().GetColumn()
+	}
+	slots := make([]*grammar.ArgumentContext, len(methodMeta.ParamTypes))
+	next := 0
+	for _, arg := range args {
+		if arg.Identifier() == nil {
+			if next >= len(slots) {
+				return nil, galaerr.NewSemanticErrorAt(line, col, fmt.Sprintf("too many arguments in call to %s", methodMeta.Name))
+			}
+			slots[next] = arg
+			next++
+			continue
+		}
+		name := arg.Identifier().GetText()
+		idx := slices.Index(methodMeta.ParamNames, name)
+		if idx < 0 || idx >= len(slots) {
+			return nil, galaerr.NewSemanticErrorAt(line, col, fmt.Sprintf("unknown parameter %q in call to %s", name, methodMeta.Name))
+		}
+		if slots[idx] != nil {
+			return nil, galaerr.NewSemanticErrorAt(line, col, fmt.Sprintf("parameter %q specified both positionally and by name in call to %s", name, methodMeta.Name))
+		}
+		slots[idx] = arg
+	}
+	for i, slot := range slots {
+		if slot != nil {
+			continue
+		}
+		if _, hasDefault := methodMeta.DefaultExprs[i]; !hasDefault {
+			paramName := ""
+			if i < len(methodMeta.ParamNames) {
+				paramName = methodMeta.ParamNames[i]
+			}
+			return nil, galaerr.NewSemanticErrorAt(line, col, fmt.Sprintf("missing required argument %q (parameter %d) in call to %s", paramName, i+1, methodMeta.Name))
+		}
+	}
+	return slots, nil
+}
+
+// methodDefaultArg is the default value of a method's i-th parameter at a call
+// on callSiteReceiver.
+func (t *galaASTTransformer) methodDefaultArg(methodMeta *transpiler.MethodMetadata, i int, callSiteReceiver ast.Expr, recvTypeName string) (ast.Expr, error) {
+	expr, err := t.transformDefaultExpr(methodMeta.DefaultExprs[i])
+	if err != nil {
+		return nil, err
+	}
+	// Substitute receiver references and unwrap immutable field accesses. Only
+	// when the call-site receiver differs from the method's receiver name — when
+	// they match, transformDefaultExpr already handles the unwrapping via the
+	// current scope.
+	if methodMeta.ReceiverName != "" && !isIdentNamed(callSiteReceiver, methodMeta.ReceiverName) {
+		expr = t.substituteReceiverInDefault(expr, methodMeta.ReceiverName, callSiteReceiver, recvTypeName)
+	}
+	return expr, nil
 }
 
 // emitGenericMethodFreeFunc builds the monomorphized free-function call that a
@@ -2812,24 +2908,16 @@ func (t *galaASTTransformer) handleNamedArgsMethodCall(
 	}
 	for i, slot := range result {
 		if slot == nil {
-			defaultExprText, hasDefault := methodMeta.DefaultExprs[i]
-			if !hasDefault {
+			if _, hasDefault := methodMeta.DefaultExprs[i]; !hasDefault {
 				paramName := ""
 				if i < len(methodMeta.ParamNames) {
 					paramName = methodMeta.ParamNames[i]
 				}
 				return nil, galaerr.NewSemanticErrorAt(line, col, fmt.Sprintf("missing required argument %q (parameter %d) in call to %s", paramName, i+1, methodMeta.Name))
 			}
-			expr, err := t.transformDefaultExpr(defaultExprText)
+			expr, err := t.methodDefaultArg(methodMeta, i, callSiteReceiver, recvTypeName)
 			if err != nil {
 				return nil, err
-			}
-			// Substitute receiver references and unwrap immutable field accesses.
-			// Only substitute when the call-site receiver differs from the method's
-			// receiver name — when they match, transformDefaultExpr already handles
-			// the unwrapping via the current scope.
-			if methodMeta.ReceiverName != "" && !isIdentNamed(callSiteReceiver, methodMeta.ReceiverName) {
-				expr = t.substituteReceiverInDefault(expr, methodMeta.ReceiverName, callSiteReceiver, recvTypeName)
 			}
 			result[i] = expr
 		}
@@ -2844,17 +2932,12 @@ func (t *galaASTTransformer) fillDefaultArgsMethod(callSiteReceiver ast.Expr, ar
 	result := make([]ast.Expr, totalParams)
 	copy(result, args)
 	for i := len(args); i < totalParams; i++ {
-		defaultExprText, hasDefault := methodMeta.DefaultExprs[i]
-		if !hasDefault {
+		if _, hasDefault := methodMeta.DefaultExprs[i]; !hasDefault {
 			return nil, galaerr.NewSemanticErrorAt(line, col, fmt.Sprintf("missing required argument %q (parameter %d) in call to %s", methodMeta.ParamNames[i], i+1, methodMeta.Name))
 		}
-		expr, err := t.transformDefaultExpr(defaultExprText)
+		expr, err := t.methodDefaultArg(methodMeta, i, callSiteReceiver, recvTypeName)
 		if err != nil {
 			return nil, err
-		}
-		// Same as above — only substitute when receivers differ
-		if methodMeta.ReceiverName != "" && !isIdentNamed(callSiteReceiver, methodMeta.ReceiverName) {
-			expr = t.substituteReceiverInDefault(expr, methodMeta.ReceiverName, callSiteReceiver, recvTypeName)
 		}
 		result[i] = expr
 	}
