@@ -6,7 +6,7 @@ require (
 	github.com/antlr4-go/antlr/v4 v4.13.1
 	github.com/bazelbuild/rules_go v0.59.0
 	github.com/go-git/go-git/v5 v5.16.4
-	github.com/owenrumney/go-lsp v0.1.4
+	github.com/owenrumney/go-lsp v0.2.5
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sys v0.36.0

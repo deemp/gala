@@ -60,7 +60,7 @@ func hoverAt(t *testing.T, h hoverHarness, uri lsp.DocumentURI, src, anchor, wor
 	if hv == nil {
 		return ""
 	}
-	return hv.Contents.Value
+	return hv.Contents.Value()
 }
 
 type hoverHarness interface {
@@ -144,8 +144,8 @@ func main() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hv != nil && strings.Contains(hv.Contents.Value, "type Body") {
-		t.Errorf("member lookup fell through to an unrelated top-level type\n--- got ---\n%s", hv.Contents.Value)
+	if hv != nil && strings.Contains(hv.Contents.Value(), "type Body") {
+		t.Errorf("member lookup fell through to an unrelated top-level type\n--- got ---\n%s", hv.Contents.Value())
 	}
 }
 
@@ -171,8 +171,8 @@ func main() {
 	if hv == nil {
 		t.Fatal("local did not resolve")
 	}
-	if strings.Contains(hv.Contents.Value, "val count") {
-		t.Errorf("a var was reported as val at a non-declaration reference\n--- got ---\n%s", hv.Contents.Value)
+	if strings.Contains(hv.Contents.Value(), "val count") {
+		t.Errorf("a var was reported as val at a non-declaration reference\n--- got ---\n%s", hv.Contents.Value())
 	}
 }
 
@@ -198,10 +198,10 @@ func main() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hv == nil || !strings.Contains(hv.Contents.Value, "collection_immutable") {
+	if hv == nil || !strings.Contains(hv.Contents.Value(), "collection_immutable") {
 		got := ""
 		if hv != nil {
-			got = hv.Contents.Value
+			got = hv.Contents.Value()
 		}
 		t.Errorf("grouped-import alias did not resolve\n--- got ---\n%s", got)
 	}

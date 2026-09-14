@@ -27,9 +27,10 @@ type lspClient struct {
 	stdin  io.WriteCloser
 	stdout *bufio.Reader
 
-	mu    sync.Mutex
-	diags map[string][]diagnostic // uri -> latest diagnostics
-	nextID int
+	mu        sync.Mutex
+	diags     map[string][]diagnostic            // uri -> latest diagnostics
+	responses map[int]map[string]json.RawMessage // request id -> response members
+	nextID    int
 
 	done chan struct{}
 }
@@ -65,11 +66,12 @@ func startLSP(galaBin string) (*lspClient, error) {
 		return nil, err
 	}
 	c := &lspClient{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
-		diags:  make(map[string][]diagnostic),
-		done:   make(chan struct{}),
+		cmd:       cmd,
+		stdin:     stdin,
+		stdout:    bufio.NewReader(stdout),
+		diags:     make(map[string][]diagnostic),
+		responses: make(map[int]map[string]json.RawMessage),
+		done:      make(chan struct{}),
 	}
 	go c.readLoop()
 	return c, nil
@@ -83,10 +85,20 @@ func (c *lspClient) readLoop() {
 			return
 		}
 		var env struct {
+			ID     *int            `json:"id"`
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(msg, &env) != nil {
+			continue
+		}
+		if env.ID != nil && env.Method == "" {
+			var members map[string]json.RawMessage
+			if json.Unmarshal(msg, &members) == nil {
+				c.mu.Lock()
+				c.responses[*env.ID] = members
+				c.mu.Unlock()
+			}
 			continue
 		}
 		if env.Method == "textDocument/publishDiagnostics" {
@@ -197,4 +209,25 @@ func pathToFileURI(p string) string {
 		s = "/" + s // Windows drive paths: C:/... -> /C:/...
 	}
 	return "file://" + s
+}
+
+// call sends a request and waits for its response, returned as the raw
+// top-level members of the JSON-RPC envelope so tests can check which members
+// are present, not just their decoded values.
+func (c *lspClient) call(method string, params interface{}) (map[string]json.RawMessage, error) {
+	if err := c.request(method, params); err != nil {
+		return nil, err
+	}
+	id := c.nextID
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		resp, ok := c.responses[id]
+		c.mu.Unlock()
+		if ok {
+			return resp, nil
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return nil, fmt.Errorf("no response to %s (id %d)", method, id)
 }

@@ -64,12 +64,13 @@ The plugin connects to the `gala` CLI for advanced features (diagnostics, hover,
 | Real-time diagnostics | Parse and transpilation errors as you type |
 | Hover (Ctrl+Q) | Type signatures, fields, methods, sealed cases |
 | Go to Definition | Cross-file navigation using analyzer metadata |
-| Find References | All occurrences of a symbol in the current file |
+| Find References | All occurrences of a symbol across its package's files |
 | Completion | Types, functions, methods, keywords from analyzed packages |
 | Named arg completion | Field names inside `Type(Field = )` constructors |
 | Match case completion | Sealed variants with field destructuring |
 | Inlay hints | Inferred types on `val x = ...` declarations |
-| Document symbols | Outline of types and functions |
+| Document symbols | Outline of types, methods, functions and package-level vals |
+| Workspace symbols | Declarations matching a name across the project |
 | Match exhaustiveness | Warning when sealed type match is missing cases |
 
 ## Known Limitations

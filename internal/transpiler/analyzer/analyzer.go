@@ -422,6 +422,13 @@ func (a *galaAnalyzer) SetGoSrcDirs(dirs map[string]string) {
 	a.goSrcDirs = dirs
 }
 
+// SetPackageFiles sets the sibling files that form one package with the file
+// being analyzed, as NewGalaAnalyzerWithPackageFiles does. The LSP uses it for
+// multi-file `main` packages, which directory discovery skips.
+func (a *galaAnalyzer) SetPackageFiles(files []string) {
+	a.packageFiles = files
+}
+
 // resolveGoSrcDir maps a Go import path to its on-disk .go source directory
 // using the wired goSrcDirs table. It first tries an exact match, then the
 // longest registered import-path prefix (a module path), appending the

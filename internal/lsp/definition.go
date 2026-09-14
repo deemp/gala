@@ -917,7 +917,20 @@ func (h *GalaHandler) References(ctx context.Context, params *lsp.ReferenceParam
 		return nil, nil
 	}
 
-	// Find all occurrences of the word in the current file
+	// The current document first, then every other file of its package, which
+	// is where a package-level symbol's declaration and other uses live.
+	locs := wordOccurrences(text, word, uri)
+	for _, path := range h.packageFiles(uriToPath(uri), text) {
+		if src, ok := h.fileText(path); ok {
+			locs = append(locs, wordOccurrences(src, word, pathToURI(path))...)
+		}
+	}
+	return locs, nil
+}
+
+// wordOccurrences returns the location of every whole-word occurrence of word
+// in text.
+func wordOccurrences(text, word, uri string) []lsp.Location {
 	var locs []lsp.Location
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
@@ -943,8 +956,7 @@ func (h *GalaHandler) References(ctx context.Context, params *lsp.ReferenceParam
 			idx = col + len(word)
 		}
 	}
-
-	return locs, nil
+	return locs
 }
 
 func localDefinition(text, name, uri string) *lsp.Location {
@@ -1083,4 +1095,3 @@ func fileLocationBroad(filePath, name string) *lsp.Location {
 	}
 	return nil
 }
-

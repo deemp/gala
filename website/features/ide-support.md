@@ -101,12 +101,13 @@ The structure view displays sealed type `Shape` with its variants (`Circle`, `Re
 
 - **Diagnostics** — parse errors, transpilation errors, unused variables, match exhaustiveness, and the surface guardrails: bare Go builtins (**GALA-E0035**) and bare Go statement keywords such as `defer` (**GALA-E0036**)
 - **Hover** — type signatures with fields, methods, sealed cases, built-in function docs
-- **Go to Definition** — cross-file, local declarations, pattern bindings, named arg fields, Go stdlib and third-party Go module sources, `go_interop` and other Go-only packages
-- **Find References** — all usages of a variable, function, or type
+- **Go to Definition** — cross-file (including the files of a multi-file `main` program), local declarations, pattern bindings, named arg fields, Go stdlib and third-party Go module sources, `go_interop` and other Go-only packages
+- **Find References** — usages of a name across all files of its package
 - **Completion** — type-aware dot completion (GALA *and* Go types), named arguments, sealed case patterns, keywords including `use`/`bind`/`also`, and `.Size()`/`.ByteSize()` on Go primitives
 - **No dead ends** — the E0035-forbidden builtins (`len`, `append`, `make`, `panic`, …) are filtered out of completion against the transpiler's own authoritative list, so the editor never suggests code the compiler rejects
 - **Inlay hints** — compiler-inferred types for all `val`/`var` declarations
-- **Document symbols** — types, functions, sealed variants for outline view
+- **Document symbols** — the file's own types, sealed variants, methods, functions and package-level vals, at their exact positions
+- **Workspace symbols** — search declarations by name across every `.gala` file in the project
 - **Debounced analysis** — 500ms delay after last keystroke to prevent noise while typing
 
 ---
