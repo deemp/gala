@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"martianoff/gala/std"
 )
@@ -930,43 +931,31 @@ func findUnquotedHash(s string) int {
 
 func parseQuotedKey(line string) (string, string, bool) {
 	quote := line[0]
-	var sb strings.Builder
 	for i := 1; i < len(line); i++ {
 		c := line[i]
-		if quote == '"' && c == '\\' && i+1 < len(line) {
-			esc := line[i+1]
-			switch esc {
-			case 'n':
-				sb.WriteByte('\n')
-			case 't':
-				sb.WriteByte('\t')
-			case 'r':
-				sb.WriteByte('\r')
-			case '"':
-				sb.WriteByte('"')
-			case '\\':
-				sb.WriteByte('\\')
-			default:
-				sb.WriteByte(esc)
-			}
-			i++
+		if quote == '"' && c == '\\' {
+			i++ // an escaped character never closes the key
 			continue
 		}
-		if c == quote {
-			j := i + 1
-			for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
-				j++
-			}
-			if j >= len(line) || line[j] != ':' {
-				return "", "", false
-			}
-			rest := ""
-			if j+1 < len(line) {
-				rest = strings.TrimSpace(line[j+1:])
-			}
-			return sb.String(), rest, true
+		if c != quote {
+			continue
 		}
-		sb.WriteByte(c)
+		j := i + 1
+		for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+			j++
+		}
+		if j >= len(line) || line[j] != ':' {
+			return "", "", false
+		}
+		rest := ""
+		if j+1 < len(line) {
+			rest = strings.TrimSpace(line[j+1:])
+		}
+		key := line[1:i]
+		if quote == '"' {
+			key = unescapeDoubleQuoted(key)
+		}
+		return key, rest, true
 	}
 	return "", "", false
 }
@@ -977,7 +966,7 @@ func parseInlineScalar(raw string) *yNode {
 		return newScalarNode("", true)
 	}
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return newScalarNode(decodeDoubleQuoted(s), false)
+		return newScalarNode(unescapeDoubleQuoted(s[1:len(s)-1]), false)
 	}
 	if len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\'' {
 		return newScalarNode(decodeSingleQuoted(s), false)
@@ -985,53 +974,66 @@ func parseInlineScalar(raw string) *yNode {
 	return newScalarNode(s, false)
 }
 
-func decodeDoubleQuoted(s string) string {
+// yamlCharEscapes maps the one-character escapes of a YAML double-quoted
+// scalar to the character each one stands for (YAML 1.2, section 5.7).
+var yamlCharEscapes = map[byte]rune{
+	'0':  0x00,
+	'a':  0x07,
+	'b':  0x08,
+	't':  0x09,
+	'\t': 0x09,
+	'n':  0x0a,
+	'v':  0x0b,
+	'f':  0x0c,
+	'r':  0x0d,
+	'e':  0x1b,
+	' ':  ' ',
+	'"':  '"',
+	'/':  '/',
+	'\\': '\\',
+	'N':  0x85,
+	'_':  0xa0,
+	'L':  0x2028,
+	'P':  0x2029,
+}
+
+// yamlCodePointEscapes maps the code-point escapes to their number of hex
+// digits: \xXX, \uXXXX and \UXXXXXXXX.
+var yamlCodePointEscapes = map[byte]int{'x': 2, 'u': 4, 'U': 8}
+
+// unescapeDoubleQuoted decodes the body of a YAML double-quoted scalar (the
+// text between the quotes). A code-point escape names a Unicode character and
+// is written out as UTF-8, so `\xe9` and `é` both decode to "é".
+//
+// The parser reports no errors, so an escape that cannot be decoded (an
+// unknown letter, too few or invalid hex digits, a surrogate or out-of-range
+// code point) is kept as written rather than silently dropped.
+func unescapeDoubleQuoted(body string) string {
+	if strings.IndexByte(body, '\\') < 0 {
+		return body
+	}
 	var sb strings.Builder
-	end := len(s) - 1
-	for i := 1; i < end; i++ {
-		c := s[i]
-		if c == '\\' && i+1 < end {
-			esc := s[i+1]
-			switch esc {
-			case 'n':
-				sb.WriteByte('\n')
-				i++
-				continue
-			case 't':
-				sb.WriteByte('\t')
-				i++
-				continue
-			case 'r':
-				sb.WriteByte('\r')
-				i++
-				continue
-			case '"':
-				sb.WriteByte('"')
-				i++
-				continue
-			case '\\':
-				sb.WriteByte('\\')
-				i++
-				continue
-			case '/':
-				sb.WriteByte('/')
-				i++
-				continue
-			case 'x':
-				if i+3 < end {
-					if v, err := strconv.ParseUint(s[i+2:i+4], 16, 32); err == nil {
-						sb.WriteByte(byte(v))
-					}
-					i += 3
-					continue
-				}
-			default:
-				sb.WriteByte(esc)
-				i++
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if c != '\\' || i+1 >= len(body) {
+			sb.WriteByte(c)
+			continue
+		}
+		esc := body[i+1]
+		if r, ok := yamlCharEscapes[esc]; ok {
+			sb.WriteRune(r)
+			i++
+			continue
+		}
+		if digits, ok := yamlCodePointEscapes[esc]; ok && i+2+digits <= len(body) {
+			v, err := strconv.ParseUint(body[i+2:i+2+digits], 16, 4*digits)
+			if err == nil && v <= utf8.MaxRune && utf8.ValidRune(rune(v)) {
+				sb.WriteRune(rune(v))
+				i += 1 + digits
 				continue
 			}
 		}
-		sb.WriteByte(c)
+		sb.WriteByte(c) // not decodable: keep the backslash and what follows
 	}
 	return sb.String()
 }

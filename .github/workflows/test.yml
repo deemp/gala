@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: [master]
 
+# Checkout, build and test only; the token never needs to write.
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Build and Test

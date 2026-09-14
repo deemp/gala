@@ -59,6 +59,10 @@ on:
     # GitHub Actions traffic spike.
     - cron: "17 4 * * *"
 
+# Checkouts, caches and builds only; the token never needs to write.
+permissions:
+  contents: read
+
 jobs:
   real-repo-build:
     name: Build gala_team against this branch
