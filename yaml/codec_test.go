@@ -265,3 +265,62 @@ func TestDecoder_QuotedAndComments(t *testing.T) {
 	}
 	d.EndObject()
 }
+
+// ----- Double-quoted escapes -------------------------------------------------
+
+// Double-quoted scalars follow the YAML 1.2 escape set. \x, \u and \U name
+// Unicode code points and decode to UTF-8; the one-character escapes cover the
+// C0 controls and the Unicode line/space characters.
+func TestDecoder_DoubleQuotedEscapes(t *testing.T) {
+	tests := []struct {
+		name, quoted, want string
+	}{
+		{"common escapes", `"a\tb\nc\r\"d\"\\e\/f"`, "a\tb\nc\r\"d\"\\e/f"},
+		{"control escapes", `"\0\a\b\v\f\e"`, "\x00\a\b\v\f\x1b"},
+		{"escaped space and tab", `"\ x\	y"`, " x\ty"},
+		{"unicode line and space characters", `"\N\_\L\P"`, "\u0085\u00a0\u2028\u2029"},
+		{"8-bit code point", `"caf\xe9"`, "café"},
+		{"16-bit code point", `"caf\u00e9"`, "café"},
+		{"32-bit code point", `"smile \U0001F600"`, "smile 😀"},
+		{"ASCII control from the encoder", `"bell\x07"`, "bell\a"},
+		{"invalid hex kept verbatim", `"bad\xZZ!"`, `bad\xZZ!`},
+		{"truncated escape kept verbatim", `"short\u00e"`, `short\u00e`},
+		{"surrogate code point kept verbatim", `"\uD800"`, `\uD800`},
+		{"out-of-range code point kept verbatim", `"\U00110000"`, `\U00110000`},
+		{"unknown escape kept verbatim", `"\q"`, `\q`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewYamlDecoder("value: " + tt.quoted + "\n" + tt.quoted + ": key")
+			d.StartObject()
+			d.ReadKey()
+			if got := d.ReadString(); got != tt.want {
+				t.Errorf("value %s = %q, want %q", tt.quoted, got, tt.want)
+			}
+			if got := d.ReadKey(); got != tt.want {
+				t.Errorf("key %s = %q, want %q", tt.quoted, got, tt.want)
+			}
+			d.ReadString()
+			d.EndObject()
+		})
+	}
+}
+
+// Strings the encoder double-quotes decode back to the original.
+func TestEncoderDecoder_QuotedStringRoundTrip(t *testing.T) {
+	for _, s := range []string{"tab\tand\nnewline", "ctrl\x01\x1f", `quote " and \ backslash`, "café 😀", " padded "} {
+		e := NewYamlEncoder()
+		e.WriteStartObject()
+		e.WriteKey("v")
+		e.WriteString(s)
+		e.WriteEndObject()
+
+		d := NewYamlDecoder(e.String())
+		d.StartObject()
+		d.ReadKey()
+		if got := d.ReadString(); got != s {
+			t.Errorf("round trip of %q through %q = %q", s, e.String(), got)
+		}
+		d.EndObject()
+	}
+}
