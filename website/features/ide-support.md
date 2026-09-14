@@ -155,6 +155,7 @@ The GALA plugin connects [Claude Code](https://code.claude.com) to `gala lsp`, s
 
 - **Diagnostics after every edit.** Parse errors, non-exhaustive matches and other transpiler errors are pushed into Claude's context right after it changes a file, so it fixes them without running a build.
 - **Hover, go-to-definition and find references.** Claude looks up inferred types and declarations instead of guessing them.
+- **A skill that steers Claude to the language server.** It edits `.gala` files with the tools that report diagnostics and finds standard library methods through definitions and symbols instead of grepping.
 
 The plugin starts the `gala` binary but does not include it. Install the GALA CLI first (see [Getting Started]({{ '/getting-started/' | relative_url }})) and check that `gala version` works in the terminal you start Claude Code from. Then run in Claude Code:
 
