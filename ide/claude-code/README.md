@@ -18,6 +18,13 @@ your editor has:
 - **Go to definition and find references**, across GALA packages, the Go
   standard library and third-party Go modules.
 
+The plugin also ships a `gala-code-intelligence` skill that Claude loads when it
+works on `.gala` files. It tells Claude to edit them with its Edit and Write
+tools (shell edits never reach the language server, so they get no
+diagnostics), to look up inferred types and std signatures through the language
+server instead of guessing or grepping cache directories, and to finish with a
+build.
+
 ## Install
 
 1. **Install the GALA CLI** and put `gala` on your `PATH`: download a binary
