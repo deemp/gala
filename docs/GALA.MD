@@ -4267,14 +4267,15 @@ The LSP server leverages the full transpiler pipeline for deep, type-aware analy
 
 - **Real-time diagnostics** — parse errors, transpilation errors, unused variables, match exhaustiveness warnings
 - **Hover** — signatures and [documentation](#19-documentation-comments) for types, methods, fields, functions, local bindings, sealed cases and packages
-- **Go to Definition** — cross-file navigation via analyzer metadata, local declarations, pattern bindings, named arg fields
-- **Find References** — find all occurrences in the same file
+- **Go to Definition** — cross-file navigation via analyzer metadata (a directory holding a single `main` program is analyzed as one package), local declarations, pattern bindings, named arg fields
+- **Find References** — occurrences across all files of the package
 - **Completion** — type-aware dot completion (fields, methods), sealed case patterns with destructuring, keywords, built-in functions; documentation is fetched per entry as it is highlighted
   - Completing a method or function writes out its required parameters as named arguments, with a tab stop for each value: `WithName(name = |)`
   - Inside an argument list, the parameters not given yet are offered as named arguments first — for functions, methods (resolved through builder chains) and constructors
 - **Signature help** — the callee's summary and each parameter's own documentation line as you type the argument
 - **Inlay hints** — displays inferred types from the transpiler's VarTypes for `val`, `var`, and other declarations
-- **Document symbols** — types, functions, sealed variants in the document outline
+- **Document symbols** — the file's own types, sealed variants, methods, functions and package-level vals in the document outline
+- **Workspace symbols** — declarations matching a name across every `.gala` file under the project root (hidden directories and Bazel output skipped)
 - **Cancel-and-restart analysis** — each edit starts a fresh analysis and abandons the one in flight, so results always reflect the current buffer
 
 ### VS Code

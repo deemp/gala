@@ -44,10 +44,7 @@ func (h *GalaHandler) Hover(ctx context.Context, params *lsp.HoverParams) (*lsp.
 	}
 
 	return &lsp.Hover{
-		Contents: lsp.MarkupContent{
-			Kind:  lsp.Markdown,
-			Value: info,
-		},
+		Contents: lsp.NewHoverContents(lsp.Markdown, info),
 	}, nil
 }
 

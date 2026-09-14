@@ -252,7 +252,7 @@ func TestInitialize_Capabilities(t *testing.T) {
 	if caps.ReferencesProvider == nil || !*caps.ReferencesProvider {
 		t.Error("expected references provider enabled")
 	}
-	if caps.DocumentSymbolProvider == nil || !*caps.DocumentSymbolProvider {
+	if !caps.DocumentSymbolProvider.Enabled() {
 		t.Error("expected document symbol provider enabled")
 	}
 }
@@ -1127,11 +1127,11 @@ func TestHover_Println(t *testing.T) {
 	if hover == nil {
 		t.Fatalf("hover returned nil for Println")
 	}
-	if !strings.Contains(hover.Contents.Value, "Println") {
-		t.Errorf("expected hover to mention Println, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "Println") {
+		t.Errorf("expected hover to mention Println, got: %s", hover.Contents.Value())
 	}
-	if !strings.Contains(hover.Contents.Value, "Built-in") {
-		t.Errorf("expected hover to say Built-in, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "Built-in") {
+		t.Errorf("expected hover to say Built-in, got: %s", hover.Contents.Value())
 	}
 }
 
@@ -1150,11 +1150,11 @@ func TestHover_Len(t *testing.T) {
 		t.Log("hover returned nil for len — analyzer may not populate richAST in test harness")
 		return
 	}
-	if !strings.Contains(hover.Contents.Value, "len") {
-		t.Errorf("expected hover to mention len, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "len") {
+		t.Errorf("expected hover to mention len, got: %s", hover.Contents.Value())
 	}
-	if !strings.Contains(hover.Contents.Value, "built-in") && !strings.Contains(hover.Contents.Value, "Go built-in") {
-		t.Errorf("expected hover to say built-in, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "built-in") && !strings.Contains(hover.Contents.Value(), "Go built-in") {
+		t.Errorf("expected hover to say built-in, got: %s", hover.Contents.Value())
 	}
 }
 
@@ -1173,8 +1173,8 @@ func TestHover_SliceOf(t *testing.T) {
 		t.Log("hover returned nil for SliceOf — analyzer may not populate richAST in test harness")
 		return
 	}
-	if !strings.Contains(hover.Contents.Value, "SliceOf") {
-		t.Errorf("expected hover to mention SliceOf, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "SliceOf") {
+		t.Errorf("expected hover to mention SliceOf, got: %s", hover.Contents.Value())
 	}
 }
 
@@ -1194,14 +1194,14 @@ func TestHover_UserType(t *testing.T) {
 		t.Log("hover on user type returned nil — analyzer may not populate richAST in test harness")
 		return
 	}
-	if !strings.Contains(hover.Contents.Value, "Person") {
-		t.Errorf("expected hover to mention Person, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "Person") {
+		t.Errorf("expected hover to mention Person, got: %s", hover.Contents.Value())
 	}
-	if !strings.Contains(hover.Contents.Value, "name") {
-		t.Errorf("expected hover to show field 'name', got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "name") {
+		t.Errorf("expected hover to show field 'name', got: %s", hover.Contents.Value())
 	}
-	if !strings.Contains(hover.Contents.Value, "age") {
-		t.Errorf("expected hover to show field 'age', got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "age") {
+		t.Errorf("expected hover to show field 'age', got: %s", hover.Contents.Value())
 	}
 }
 
@@ -1220,16 +1220,16 @@ func TestHover_SealedType(t *testing.T) {
 		t.Log("hover on sealed type returned nil — analyzer may not populate richAST in test harness")
 		return
 	}
-	if !strings.Contains(hover.Contents.Value, "sealed") {
-		t.Errorf("expected hover to say 'sealed', got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "sealed") {
+		t.Errorf("expected hover to say 'sealed', got: %s", hover.Contents.Value())
 	}
-	if !strings.Contains(hover.Contents.Value, "Shape") {
-		t.Errorf("expected hover to mention Shape, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "Shape") {
+		t.Errorf("expected hover to mention Shape, got: %s", hover.Contents.Value())
 	}
 	// Check variant names appear
 	for _, variant := range []string{"Circle", "Rectangle", "Triangle"} {
-		if !strings.Contains(hover.Contents.Value, variant) {
-			t.Errorf("expected hover to list variant %s, got: %s", variant, hover.Contents.Value)
+		if !strings.Contains(hover.Contents.Value(), variant) {
+			t.Errorf("expected hover to list variant %s, got: %s", variant, hover.Contents.Value())
 		}
 	}
 }
@@ -1250,11 +1250,11 @@ func TestHover_FunctionSignature(t *testing.T) {
 		t.Log("hover on function returned nil — analyzer may not populate richAST in test harness")
 		return
 	}
-	if !strings.Contains(hover.Contents.Value, "greet") {
-		t.Errorf("expected hover to mention greet, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "greet") {
+		t.Errorf("expected hover to mention greet, got: %s", hover.Contents.Value())
 	}
-	if !strings.Contains(hover.Contents.Value, "string") {
-		t.Errorf("expected hover to show string type, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "string") {
+		t.Errorf("expected hover to show string type, got: %s", hover.Contents.Value())
 	}
 }
 
@@ -1274,8 +1274,8 @@ func TestHover_SealedCaseConstructor(t *testing.T) {
 		t.Log("hover on sealed case constructor returned nil — analyzer may not populate richAST in test harness")
 		return
 	}
-	if !strings.Contains(hover.Contents.Value, "Circle") {
-		t.Errorf("expected hover to mention Circle, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "Circle") {
+		t.Errorf("expected hover to mention Circle, got: %s", hover.Contents.Value())
 	}
 }
 
@@ -1292,7 +1292,7 @@ func TestHover_Empty(t *testing.T) {
 		t.Fatal(err)
 	}
 	if hover != nil {
-		t.Logf("hover on empty position: %s", hover.Contents.Value)
+		t.Logf("hover on empty position: %s", hover.Contents.Value())
 	}
 }
 
@@ -1844,8 +1844,8 @@ func TestDidChange_ReAnalysis(t *testing.T) {
 		t.Log("hover after DidChange returned nil — re-analysis may not produce richAST")
 		return
 	}
-	if !strings.Contains(hover.Contents.Value, "greet") {
-		t.Errorf("expected hover to mention greet after DidChange, got: %s", hover.Contents.Value)
+	if !strings.Contains(hover.Contents.Value(), "greet") {
+		t.Errorf("expected hover to mention greet after DidChange, got: %s", hover.Contents.Value())
 	}
 }
 
@@ -1987,8 +1987,8 @@ func TestHover_AllBuiltins(t *testing.T) {
 			if hover == nil {
 				t.Skipf("hover returned nil for %s — builtin not found in richAST", tc.name)
 			}
-			if !strings.Contains(hover.Contents.Value, tc.name) {
-				t.Errorf("expected hover to mention %s, got: %s", tc.name, hover.Contents.Value)
+			if !strings.Contains(hover.Contents.Value(), tc.name) {
+				t.Errorf("expected hover to mention %s, got: %s", tc.name, hover.Contents.Value())
 			}
 		})
 	}
@@ -3591,9 +3591,9 @@ func TestSiblingFile_TypeResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 	if hover != nil {
-		t.Logf("hover on Config from sibling: %s", hover.Contents.Value)
-		if !strings.Contains(hover.Contents.Value, "Config") {
-			t.Errorf("expected hover to mention Config, got: %s", hover.Contents.Value)
+		t.Logf("hover on Config from sibling: %s", hover.Contents.Value())
+		if !strings.Contains(hover.Contents.Value(), "Config") {
+			t.Errorf("expected hover to mention Config, got: %s", hover.Contents.Value())
 		}
 	}
 }

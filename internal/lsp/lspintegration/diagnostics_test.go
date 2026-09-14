@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -21,6 +22,11 @@ func findGalaBinary(t *testing.T) string {
 		"_main/cmd/gala/gala_/gala",
 	}
 	for _, c := range candidates {
+		// Without the extension the Windows lookup misses the built binary and
+		// falls through to whatever `gala` is on PATH, testing the wrong server.
+		if runtime.GOOS == "windows" {
+			c += ".exe"
+		}
 		if p, err := bazel.Runfile(c); err == nil {
 			if _, statErr := os.Stat(p); statErr == nil {
 				return p

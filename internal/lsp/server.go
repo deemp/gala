@@ -201,9 +201,10 @@ func (h *GalaHandler) Initialize(ctx context.Context, params *lsp.InitializePara
 				TriggerCharacters:   []string{"(", ","},
 				RetriggerCharacters: []string{","},
 			},
-			InlayHintProvider:      &lsp.InlayHintOptions{},
-			ReferencesProvider:     boolPtr(true),
-			DocumentSymbolProvider: boolPtr(true),
+			InlayHintProvider:       &lsp.InlayHintOptions{},
+			ReferencesProvider:      boolPtr(true),
+			DocumentSymbolProvider:  &lsp.DocumentSymbolOptions{},
+			WorkspaceSymbolProvider: &lsp.WorkspaceSymbolOptions{},
 		},
 		ServerInfo: &lsp.ServerInfo{
 			Name:    "gala-lsp",
@@ -356,18 +357,11 @@ func (h *GalaHandler) analyzeFile(uri, filePath, text string) []lsp.Diagnostic {
 			h.parseTexts[uri] = text
 			h.mu.Unlock()
 		}
-		h.tryAnalyzePartial(uri, filePath, partialTree, partialDocs)
+		h.tryAnalyzePartial(uri, filePath, text, partialTree, partialDocs)
 		return diagnostics
 	}
 
-	searchPaths := h.getSearchPaths(filePath)
-	a := analyzer.NewGalaAnalyzerForLSP(h.parser, searchPaths)
-	if len(h.goSrcDirs) > 0 {
-		if s, ok := a.(interface{ SetGoSrcDirs(map[string]string) }); ok {
-			s.SetGoSrcDirs(h.goSrcDirs)
-		}
-	}
-	richAST, err := a.Analyze(tree, docs, filePath)
+	richAST, err := h.newAnalyzer(filePath, text).Analyze(tree, docs, filePath)
 	if err != nil {
 		diagnostics = append(diagnostics, errorsToDiagnostics(err)...)
 		return diagnostics
@@ -413,6 +407,26 @@ func (h *GalaHandler) analyzeFile(uri, filePath, text string) []lsp.Diagnostic {
 	}
 
 	return diagnostics
+}
+
+// newAnalyzer builds the analyzer for one document: search paths, Go source
+// directories, and the files of a multi-file `main` package, which the
+// analyzer does not discover on its own (see packageFiles).
+func (h *GalaHandler) newAnalyzer(filePath, text string) transpiler.Analyzer {
+	a := analyzer.NewGalaAnalyzerForLSP(h.parser, h.getSearchPaths(filePath))
+	if len(h.goSrcDirs) > 0 {
+		if s, ok := a.(interface{ SetGoSrcDirs(map[string]string) }); ok {
+			s.SetGoSrcDirs(h.goSrcDirs)
+		}
+	}
+	if sourcePackageName(text) == "main" {
+		if files := h.packageFiles(filePath, text); len(files) > 0 {
+			if s, ok := a.(interface{ SetPackageFiles([]string) }); ok {
+				s.SetPackageFiles(files)
+			}
+		}
+	}
+	return a
 }
 
 func (h *GalaHandler) getSearchPaths(filePath string) []string {
@@ -482,20 +496,13 @@ func (h *GalaHandler) loadProjectModule(rootPath string) {
 // completion and go-to-def working while the user is mid-edit.
 // tryAnalyzePartial runs the analyzer on ANTLR's error-recovered tree.
 // The tree may have nil/error nodes, so this is wrapped in panic recovery.
-func (h *GalaHandler) tryAnalyzePartial(uri, filePath string, tree antlr.Tree, docs map[int]string) {
+func (h *GalaHandler) tryAnalyzePartial(uri, filePath, text string, tree antlr.Tree, docs map[int]string) {
 	if tree == nil {
 		return
 	}
 	defer func() { recover() }()
 
-	searchPaths := h.getSearchPaths(filePath)
-	a := analyzer.NewGalaAnalyzerForLSP(h.parser, searchPaths)
-	if len(h.goSrcDirs) > 0 {
-		if s, ok := a.(interface{ SetGoSrcDirs(map[string]string) }); ok {
-			s.SetGoSrcDirs(h.goSrcDirs)
-		}
-	}
-	richAST, err := a.Analyze(tree, docs, filePath)
+	richAST, err := h.newAnalyzer(filePath, text).Analyze(tree, docs, filePath)
 	if err != nil || richAST == nil {
 		return
 	}
@@ -601,14 +608,7 @@ func (h *GalaHandler) analyzeAndCache(uri, cleanText, caller string) {
 	}
 
 	filePath := uriToPath(uri)
-	searchPaths := h.getSearchPaths(filePath)
-	a := analyzer.NewGalaAnalyzerForLSP(h.parser, searchPaths)
-	if len(h.goSrcDirs) > 0 {
-		if s, ok := a.(interface{ SetGoSrcDirs(map[string]string) }); ok {
-			s.SetGoSrcDirs(h.goSrcDirs)
-		}
-	}
-	richAST, aerr := a.Analyze(tree, docs, filePath)
+	richAST, aerr := h.newAnalyzer(filePath, cleanText).Analyze(tree, docs, filePath)
 	if aerr != nil {
 		fmt.Fprintf(os.Stderr, "[%s] analyze failed: %v\n", caller, aerr)
 		return

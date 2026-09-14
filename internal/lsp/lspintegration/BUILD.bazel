@@ -5,6 +5,7 @@ go_test(
     srcs = [
         "client_test.go",
         "diagnostics_test.go",
+        "responses_test.go",
     ],
     data = ["//cmd/gala"],
     # Spawns the real `gala lsp` subprocess (which reads the Go SDK for type
