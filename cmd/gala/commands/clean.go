@@ -102,16 +102,19 @@ func runClean(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	workspace, err := build.FindWorkspaceByProject(config, projectDir)
+	// A project has one workspace per command family (build, test), so
+	// cleaning it means removing each of them.
+	workspaces, err := build.FindWorkspacesByProject(config, projectDir)
 	if err != nil {
 		fmt.Println("No workspace found for current project.")
 		return
 	}
 
-	if err := workspace.Clean(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	for _, workspace := range workspaces {
+		if err := workspace.Clean(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Cleaned workspace: %s\n", workspace.Dir)
 	}
-
-	fmt.Printf("Cleaned workspace: %s\n", workspace.Dir)
 }

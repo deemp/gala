@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"martianoff/gala/internal/build"
 )
 
 var rootCmd = &cobra.Command{
@@ -110,4 +112,24 @@ func init() {
 	rootCmd.Flags().StringVarP(&transpileSearch, "search", "s", ".", "Comma-separated search paths")
 	rootCmd.Flags().StringVar(&transpilePackageFiles, "package-files", "", "Comma-separated list of sibling .gala files in the same package")
 	rootCmd.Flags().StringVar(&transpileGoroot, "goroot", "", "Path to Go SDK root (for Go type inference)")
+
+	// A build workspace is the only directory a build mutates, so this is the
+	// knob for keeping concurrent builds — CI matrices, several checkouts of
+	// one project — out of each other's way. It moves only the workspace; the
+	// large read-mostly caches beside it stay shared, so isolating a build
+	// costs nothing in downloads.
+	rootCmd.PersistentFlags().StringVar(&buildDir, "build-dir", "",
+		"Directory for build workspaces (default: $GALA_BUILD_DIR, else <gala home>/build)")
+	cobra.OnInitialize(applyBuildDir)
+}
+
+// buildDir is the --build-dir value.
+var buildDir string
+
+// applyBuildDir hands --build-dir to the build package before any command
+// constructs a Config.
+func applyBuildDir() {
+	if buildDir != "" {
+		build.SetBuildDirOverride(buildDir)
+	}
 }

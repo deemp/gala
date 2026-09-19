@@ -1,0 +1,271 @@
+package build
+
+import (
+	"os"
+	"path/filepath"
+	"runtime"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+// isolatedBuildConfig returns a Config whose build dir is a throwaway
+// directory, so these tests never touch a developer's real workspaces.
+func isolatedBuildConfig(t *testing.T) *Config {
+	t.Helper()
+	t.Setenv("GALA_HOME", t.TempDir())
+	config := DefaultConfig()
+	require.NoError(t, config.EnsureDirs())
+	return config
+}
+
+// `gala build` and `gala test` generate different trees from the same sources.
+// Sharing one workspace made them race: each wipes gen/ before transpiling, so
+// running both at once left a half-written tree behind. They must not resolve
+// to the same directory.
+func TestBuildAndTestWorkspacesAreSeparate(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	projectDir := t.TempDir()
+
+	buildWS, err := NewWorkspace(config, projectDir, ModeBuild)
+	require.NoError(t, err)
+	testWS, err := NewWorkspace(config, projectDir, ModeTest)
+	require.NoError(t, err)
+
+	require.NotEqual(t, buildWS.Dir, testWS.Dir,
+		"build and test must not share a workspace directory")
+	require.NotEqual(t, buildWS.GenDir, testWS.GenDir)
+
+	// The project hash still identifies the project: only the directory the
+	// two modes occupy differs.
+	require.Equal(t, buildWS.Hash, testWS.Hash)
+
+	// The build workspace keeps the bare hash, so workspaces that predate
+	// modes stay valid.
+	require.Equal(t, filepath.Join(config.BuildDir, buildWS.Hash), buildWS.Dir)
+}
+
+// Two projects must never share a workspace either — the directory is keyed on
+// the project path.
+func TestWorkspacesDifferPerProject(t *testing.T) {
+	config := isolatedBuildConfig(t)
+
+	a, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	b, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+
+	require.NotEqual(t, a.Dir, b.Dir)
+}
+
+// --build-dir / GALA_BUILD_DIR moves only the workspace, so a caller can
+// isolate the one directory a build mutates while still sharing the large
+// read-mostly caches beside it.
+func TestBuildDirOverrides(t *testing.T) {
+	t.Run("environment", func(t *testing.T) {
+		home := t.TempDir()
+		private := t.TempDir()
+		t.Setenv("GALA_HOME", home)
+		t.Setenv("GALA_BUILD_DIR", private)
+
+		config := DefaultConfig()
+		require.Equal(t, private, config.BuildDir)
+		// The caches stay where they were: isolating a build costs no downloads.
+		require.Equal(t, filepath.Join(home, "stdlib"), config.StdlibDir)
+		require.Equal(t, filepath.Join(home, "pkg", "mod"), config.GalaPkgDir)
+	})
+
+	t.Run("flag wins over environment", func(t *testing.T) {
+		t.Setenv("GALA_HOME", t.TempDir())
+		t.Setenv("GALA_BUILD_DIR", t.TempDir())
+		flagDir := t.TempDir()
+
+		SetBuildDirOverride(flagDir)
+		defer SetBuildDirOverride("")
+
+		require.Equal(t, flagDir, DefaultConfig().BuildDir)
+	})
+
+	t.Run("default", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("GALA_HOME", home)
+		t.Setenv("GALA_BUILD_DIR", "")
+
+		require.Equal(t, filepath.Join(home, "build"), DefaultConfig().BuildDir)
+	})
+}
+
+// The workspace lock is what stops two same-mode invocations (two builds, two
+// test runs) from sharing one mutable tree. Only one may hold it at a time.
+func TestWorkspaceLockIsExclusive(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	held, err := ws.Lock(time.Second)
+	require.NoError(t, err)
+
+	_, err = ws.Lock(200 * time.Millisecond)
+	require.Error(t, err, "a second lock must not be granted while the first is held")
+	require.ErrorIs(t, err, ErrLockBusy)
+	// The message has to tell the user how to proceed, not just that it failed.
+	require.Contains(t, err.Error(), "--build-dir")
+
+	held.Release()
+
+	after, err := ws.Lock(time.Second)
+	require.NoError(t, err, "the lock must be available once released")
+	after.Release()
+}
+
+// Release is called from a defer on paths that may already have released, so it
+// has to tolerate being called twice.
+func TestWorkspaceLockReleaseIsIdempotent(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	h, err := ws.Lock(time.Second)
+	require.NoError(t, err)
+	h.Release()
+	require.NotPanics(t, h.Release)
+}
+
+// A process killed mid-build leaves its lock file behind. That must not wedge
+// the workspace for every later build.
+func TestWorkspaceLockBreaksStaleLock(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	lockPath := filepath.Join(ws.Dir, lockFileName)
+	require.NoError(t, os.WriteFile(lockPath, []byte("pid=999999\n"), 0644))
+
+	// Age it past the staleness window, as an abandoned lock would be.
+	old := time.Now().Add(-2 * lockStale)
+	require.NoError(t, os.Chtimes(lockPath, old, old))
+
+	h, err := ws.Lock(2 * time.Second)
+	require.NoError(t, err, "an abandoned lock must be broken, not waited on forever")
+	h.Release()
+}
+
+// A waiter must acquire the lock once the holder releases it, rather than
+// failing outright — the common case is a short wait, not a conflict.
+func TestWorkspaceLockWaitsForRelease(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	first, err := ws.Lock(time.Second)
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var waitErr error
+	go func() {
+		defer wg.Done()
+		h, err := ws.Lock(5 * time.Second)
+		waitErr = err
+		if h != nil {
+			h.Release()
+		}
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	first.Release()
+
+	wg.Wait()
+	require.NoError(t, waitErr, "the waiter should acquire the lock after it is released")
+}
+
+// On Windows a file another process holds open cannot be unlinked, so a gen/
+// file that is briefly locked — a test binary that has just exited, a scanner —
+// used to fail the whole build. CleanGen must wait such a holder out.
+func TestCleanGenRetriesThroughTransientLock(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	stuck := filepath.Join(ws.GenDir, "held_open.go")
+	require.NoError(t, os.WriteFile(stuck, []byte("package gen\n"), 0644))
+
+	f, err := os.Open(stuck)
+	require.NoError(t, err)
+
+	// Release the handle shortly after CleanGen starts, as a real short-lived
+	// holder would.
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_ = f.Close()
+	}()
+
+	require.NoError(t, ws.CleanGen(), "CleanGen must retry through a transient lock")
+
+	entries, err := os.ReadDir(ws.GenDir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "gen/ must be empty after CleanGen")
+}
+
+// A holder that never lets go is a real problem: building on a stale gen tree
+// would compile stale code. CleanGen must fail — but say what to do about it,
+// rather than surfacing a bare "unlinkat ...".
+func TestCleanGenReportsHeldFileClearly(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("only Windows refuses to unlink a file that is open")
+	}
+
+	config := isolatedBuildConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	stuck := filepath.Join(ws.GenDir, "held_open.go")
+	require.NoError(t, os.WriteFile(stuck, []byte("package gen\n"), 0644))
+
+	f, err := os.Open(stuck)
+	require.NoError(t, err)
+	defer f.Close()
+
+	err = ws.CleanGen()
+	require.Error(t, err, "a permanently held file must not be silently built around")
+	require.Contains(t, err.Error(), ws.GenDir, "the error should name the directory")
+	require.Contains(t, err.Error(), "--build-dir", "the error should say how to proceed")
+}
+
+// Cleaning a project has to remove every workspace it owns, not only the build
+// one — otherwise `gala clean` leaves the test tree behind.
+func TestFindWorkspacesByProjectReturnsEveryMode(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	projectDir := t.TempDir()
+
+	for _, mode := range []Mode{ModeBuild, ModeTest} {
+		ws, err := NewWorkspace(config, projectDir, mode)
+		require.NoError(t, err)
+		require.NoError(t, ws.Ensure())
+	}
+
+	found, err := FindWorkspacesByProject(config, projectDir)
+	require.NoError(t, err)
+	require.Len(t, found, 2)
+
+	modes := map[Mode]bool{}
+	for _, ws := range found {
+		modes[ws.Mode] = true
+	}
+	require.True(t, modes[ModeBuild])
+	require.True(t, modes[ModeTest])
+}
+
+func TestFindWorkspacesByProjectErrorsWhenAbsent(t *testing.T) {
+	config := isolatedBuildConfig(t)
+	_, err := FindWorkspacesByProject(config, t.TempDir())
+	require.Error(t, err)
+}

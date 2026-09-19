@@ -13,7 +13,7 @@ type Config struct {
 	GalaHome string
 
 	// BuildDir is where build workspaces are created.
-	// Defaults to GalaHome/build
+	// Defaults to GalaHome/build; see defaultBuildDir for the overrides.
 	BuildDir string
 
 	// StdlibDir is where the standard library is cached.
@@ -34,11 +34,40 @@ func DefaultConfig() *Config {
 	galaHome := defaultGalaHome()
 	return &Config{
 		GalaHome:   galaHome,
-		BuildDir:   filepath.Join(galaHome, "build"),
+		BuildDir:   defaultBuildDir(galaHome),
 		StdlibDir:  filepath.Join(galaHome, "stdlib"),
 		GoPkgDir:   filepath.Join(galaHome, "go", "pkg", "mod"),
 		GalaPkgDir: filepath.Join(galaHome, "pkg", "mod"),
 	}
+}
+
+// buildDirOverride is the --build-dir value. It is set once, before any Config
+// is constructed, and read by defaultBuildDir.
+var buildDirOverride string
+
+// SetBuildDirOverride points every workspace this process creates at dir. An
+// empty dir restores the default. Set from the --build-dir flag.
+func SetBuildDirOverride(dir string) {
+	buildDirOverride = dir
+}
+
+// defaultBuildDir resolves where build workspaces live: --build-dir, then
+// GALA_BUILD_DIR, then GalaHome/build.
+//
+// This is deliberately separate from GALA_HOME. A build workspace is the only
+// directory a build mutates; the caches beside it (pkg, stdlib, go) are large,
+// read-mostly, and safe to share. Redirecting the whole home to isolate a build
+// forces a caller to re-download everything, so concurrent builds — CI matrices,
+// several checkouts of one project, an editor building while a test run is in
+// flight — get a knob that moves only what needs to be private.
+func defaultBuildDir(galaHome string) string {
+	if buildDirOverride != "" {
+		return buildDirOverride
+	}
+	if dir := os.Getenv("GALA_BUILD_DIR"); dir != "" {
+		return dir
+	}
+	return filepath.Join(galaHome, "build")
 }
 
 // defaultGalaHome returns the default GALA home directory.

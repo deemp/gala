@@ -348,6 +348,40 @@ When you run `gala build`, GALA:
 - GALA library dependencies are automatically transpiled — no pre-compiled `.go` files needed in the module cache
 - No symlinks used (works on all platforms including Windows)
 
+### One workspace per project and command
+
+A build workspace is a scratch tree, not a cache: each build clears `gen/` and
+rewrites `go.mod` before transpiling into it. Two builds sharing one would
+delete each other's files mid-build, so the workspace a command uses is chosen
+to keep them apart:
+
+- **`gala build` and `gala run`** use `~/.gala/build/<hash>/`.
+- **`gala test`** uses `~/.gala/build/<hash>-test/`. The two commands generate
+  different trees from the same sources — test adds a generated runner main and
+  compiles a library as `package main` — so they never share one.
+- `<hash>` comes from the project's path, so two checkouts of the same project
+  already have separate workspaces.
+- `gala clean` removes every workspace belonging to the current project.
+
+Anything still pointed at the same workspace — two builds at once, two test
+runs — is serialized by a lock. The second invocation waits for the first and,
+if the wait does not clear, reports which process holds it.
+
+### Giving a build its own workspace
+
+Set `GALA_BUILD_DIR`, or pass `--build-dir`, to move build workspaces somewhere
+private:
+
+```shell
+gala build --build-dir /tmp/my-workspaces
+GALA_BUILD_DIR=/tmp/my-workspaces gala test
+```
+
+This is the knob for CI matrices and any setup running several builds of one
+project at once. It moves **only** the workspace: the stdlib, GALA module, and
+Go module caches stay where they are, so an isolated build re-downloads nothing.
+Redirecting `GALA_HOME` instead moves the caches too, and pays for it.
+
 ### With Bazel
 
 For Bazel projects:

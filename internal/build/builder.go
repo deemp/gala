@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"martianoff/gala/galaerr"
 	"martianoff/gala/internal/depman/fetch"
@@ -39,8 +40,15 @@ func (b *Builder) SetSourceDir(dir string) {
 	b.sourceDir = dir
 }
 
-// NewBuilder creates a new builder for the given project directory.
+// NewBuilder creates a new builder for the given project directory, using the
+// build workspace. `gala test` calls NewBuilderForMode with ModeTest so the two
+// commands never share a workspace — see Mode.
 func NewBuilder(projectDir string, stdlibVersion string, verbose bool) (*Builder, error) {
+	return NewBuilderForMode(projectDir, stdlibVersion, verbose, ModeBuild)
+}
+
+// NewBuilderForMode creates a new builder against the workspace for mode.
+func NewBuilderForMode(projectDir string, stdlibVersion string, verbose bool, mode Mode) (*Builder, error) {
 	config := DefaultConfig()
 
 	// Ensure all directories exist
@@ -49,7 +57,7 @@ func NewBuilder(projectDir string, stdlibVersion string, verbose bool) (*Builder
 	}
 
 	// Create workspace
-	workspace, err := NewWorkspace(config, projectDir)
+	workspace, err := NewWorkspace(config, projectDir, mode)
 	if err != nil {
 		return nil, fmt.Errorf("creating workspace: %w", err)
 	}
@@ -99,6 +107,15 @@ func (b *Builder) Build(outputPath string) (string, error) {
 	if err := b.workspace.Ensure(); err != nil {
 		return "", fmt.Errorf("ensuring workspace: %w", err)
 	}
+
+	// Step 1.1: Take the workspace lock. The workspace is a single mutable
+	// tree, so a second gala process working in it would delete this build's
+	// files mid-transpile.
+	lock, err := b.workspace.Lock(workspaceLockTimeout)
+	if err != nil {
+		return "", err
+	}
+	defer lock.Release()
 
 	// Step 1.5: Invalidate workspace if gala version changed
 	versionFile := filepath.Join(b.workspace.Dir, ".gala-version")
@@ -1089,6 +1106,16 @@ func (b *Builder) generateGoMod() error {
 			fmt.Println("Downloading Go dependencies...")
 		}
 
+		// The project's own packages are compiled from gen/, so every
+		// self-import must have been rewritten to the workspace module. One
+		// that survived means the gen tree is inconsistent, and `go mod tidy`
+		// would try to satisfy it from the network — downloading a *published*
+		// version of the module being built, then failing with the unhelpful
+		// "found ... but does not contain package". Refuse first, and say why.
+		if err := b.verifyNoSelfImports(); err != nil {
+			return err
+		}
+
 		cmd := exec.Command("go", "mod", "tidy")
 		cmd.Dir = b.workspace.Dir
 		cmd.Env = append(os.Environ(), "GOMODCACHE="+b.config.GoPkgDir)
@@ -1108,6 +1135,53 @@ func (b *Builder) generateGoMod() error {
 	}
 
 	return nil
+}
+
+// workspaceLockTimeout is how long a build waits for another gala process to
+// release the workspace before giving up. Generous enough to cover a cold build
+// of a large project, short enough that a genuinely wedged workspace is
+// reported rather than waited on forever.
+const workspaceLockTimeout = 10 * time.Minute
+
+// verifyNoSelfImports checks that no generated file still imports the project's
+// own Go module path. Those imports are rewritten to the workspace module
+// during transpilation (rewriteProjectModuleImports); one left behind means the
+// gen tree was written by something other than this build — historically, a
+// concurrent gala process sharing the workspace.
+//
+// Catching it here matters beyond the error text: left to `go mod tidy`, the
+// import resolves against the module proxy, so a build could silently compile
+// against a published copy of the sources instead of the ones on disk.
+func (b *Builder) verifyNoSelfImports() error {
+	projectModule := b.projectGoModulePath()
+	if projectModule == "" {
+		return nil
+	}
+
+	imports, err := CollectImports(b.workspace.GenDir)
+	if err != nil {
+		return nil // the build's own steps report a broken gen tree better
+	}
+
+	var leaked []string
+	for _, imp := range imports {
+		if imp == projectModule || strings.HasPrefix(imp, projectModule+"/") {
+			leaked = append(leaked, imp)
+		}
+	}
+	if len(leaked) == 0 {
+		return nil
+	}
+	sort.Strings(leaked)
+
+	return fmt.Errorf(
+		"build workspace is inconsistent: generated sources still import the project's own module (%s)\n"+
+			"  %s\n"+
+			"These imports should have been rewritten to the workspace module. This usually means\n"+
+			"another gala process was using the same workspace (%s).\n"+
+			"Re-run the build; if it persists, run `gala clean` or give this build its own workspace:\n"+
+			"  gala <command> --build-dir <dir>   (or set GALA_BUILD_DIR=<dir>)",
+		projectModule, strings.Join(leaked, "\n  "), b.workspace.Dir)
 }
 
 // ensureGoToolchain verifies that the Go toolchain is available on PATH.
@@ -1346,6 +1420,13 @@ func (b *Builder) Test(verbose bool) error {
 	if err := b.workspace.Ensure(); err != nil {
 		return fmt.Errorf("ensuring workspace: %w", err)
 	}
+
+	// Step 1.1: Take the workspace lock — see the note in Build.
+	lock, err := b.workspace.Lock(workspaceLockTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 
 	// Step 1.5: Invalidate workspace if gala version changed
 	versionFile := filepath.Join(b.workspace.Dir, ".gala-version")
