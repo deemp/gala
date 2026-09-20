@@ -4,29 +4,18 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
 
-// isolatedBuildConfig returns a Config whose build dir is a throwaway
-// directory, so these tests never touch a developer's real workspaces.
-func isolatedBuildConfig(t *testing.T) *Config {
-	t.Helper()
-	t.Setenv("GALA_HOME", t.TempDir())
-	config := DefaultConfig()
-	require.NoError(t, config.EnsureDirs())
-	return config
-}
-
 // `gala build` and `gala test` generate different trees from the same sources.
 // Sharing one workspace made them race: each wipes gen/ before transpiling, so
 // running both at once left a half-written tree behind. They must not resolve
 // to the same directory.
 func TestBuildAndTestWorkspacesAreSeparate(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	projectDir := t.TempDir()
 
 	buildWS, err := NewWorkspace(config, projectDir, ModeBuild)
@@ -50,7 +39,7 @@ func TestBuildAndTestWorkspacesAreSeparate(t *testing.T) {
 // Two projects must never share a workspace either — the directory is keyed on
 // the project path.
 func TestWorkspacesDifferPerProject(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 
 	a, err := NewWorkspace(config, t.TempDir(), ModeBuild)
 	require.NoError(t, err)
@@ -100,7 +89,7 @@ func TestBuildDirOverrides(t *testing.T) {
 // The workspace lock is what stops two same-mode invocations (two builds, two
 // test runs) from sharing one mutable tree. Only one may hold it at a time.
 func TestWorkspaceLockIsExclusive(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
 	require.NoError(t, err)
 	require.NoError(t, ws.Ensure())
@@ -124,7 +113,7 @@ func TestWorkspaceLockIsExclusive(t *testing.T) {
 // Release is called from a defer on paths that may already have released, so it
 // has to tolerate being called twice.
 func TestWorkspaceLockReleaseIsIdempotent(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
 	require.NoError(t, err)
 	require.NoError(t, ws.Ensure())
@@ -138,7 +127,7 @@ func TestWorkspaceLockReleaseIsIdempotent(t *testing.T) {
 // A process killed mid-build leaves its lock file behind. That must not wedge
 // the workspace for every later build.
 func TestWorkspaceLockBreaksStaleLock(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
 	require.NoError(t, err)
 	require.NoError(t, ws.Ensure())
@@ -158,7 +147,7 @@ func TestWorkspaceLockBreaksStaleLock(t *testing.T) {
 // A waiter must acquire the lock once the holder releases it, rather than
 // failing outright — the common case is a short wait, not a conflict.
 func TestWorkspaceLockWaitsForRelease(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
 	require.NoError(t, err)
 	require.NoError(t, ws.Ensure())
@@ -166,30 +155,37 @@ func TestWorkspaceLockWaitsForRelease(t *testing.T) {
 	first, err := ws.Lock(time.Second)
 	require.NoError(t, err)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	var waitErr error
+	// Ordering is explicit rather than sleep-based: the waiter announces that
+	// it has started before the holder releases, so the test asserts "a waiter
+	// already blocked gets the lock" without depending on how promptly a loaded
+	// machine schedules the goroutine.
+	started := make(chan struct{})
+	result := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		h, err := ws.Lock(5 * time.Second)
-		waitErr = err
+		close(started)
+		h, lockErr := ws.Lock(30 * time.Second)
 		if h != nil {
 			h.Release()
 		}
+		result <- lockErr
 	}()
 
-	time.Sleep(300 * time.Millisecond)
+	<-started
 	first.Release()
 
-	wg.Wait()
-	require.NoError(t, waitErr, "the waiter should acquire the lock after it is released")
+	select {
+	case waitErr := <-result:
+		require.NoError(t, waitErr, "the waiter should acquire the lock after it is released")
+	case <-time.After(60 * time.Second):
+		t.Fatal("waiter never returned after the lock was released")
+	}
 }
 
 // On Windows a file another process holds open cannot be unlinked, so a gen/
 // file that is briefly locked — a test binary that has just exited, a scanner —
 // used to fail the whole build. CleanGen must wait such a holder out.
 func TestCleanGenRetriesThroughTransientLock(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
 	require.NoError(t, err)
 	require.NoError(t, ws.Ensure())
@@ -222,7 +218,7 @@ func TestCleanGenReportsHeldFileClearly(t *testing.T) {
 		t.Skip("only Windows refuses to unlink a file that is open")
 	}
 
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
 	require.NoError(t, err)
 	require.NoError(t, ws.Ensure())
@@ -243,7 +239,7 @@ func TestCleanGenReportsHeldFileClearly(t *testing.T) {
 // Cleaning a project has to remove every workspace it owns, not only the build
 // one — otherwise `gala clean` leaves the test tree behind.
 func TestFindWorkspacesByProjectReturnsEveryMode(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	projectDir := t.TempDir()
 
 	for _, mode := range []Mode{ModeBuild, ModeTest} {
@@ -265,7 +261,7 @@ func TestFindWorkspacesByProjectReturnsEveryMode(t *testing.T) {
 }
 
 func TestFindWorkspacesByProjectErrorsWhenAbsent(t *testing.T) {
-	config := isolatedBuildConfig(t)
+	config := isolatedConfig(t)
 	_, err := FindWorkspacesByProject(config, t.TempDir())
 	require.Error(t, err)
 }

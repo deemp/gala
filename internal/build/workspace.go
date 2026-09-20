@@ -3,7 +3,6 @@ package build
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -16,16 +15,10 @@ import (
 // Mode distinguishes the workspaces one project can have.
 //
 // `gala build` and `gala test` generate different trees from the same sources:
-// test adds a generated runner main and compiles a library as package main.
-// They used to share one workspace, which made the two commands race — each
-// wipes gen/ before transpiling, so a build and a test running together would
-// transpile into, and then delete, each other's tree. The symptoms did not look
-// like a race: a half-written tree still holds un-rewritten imports of the
-// project's own module path, so `go mod tidy` goes to the network for the very
-// module being built and fails with "does not contain package".
-//
-// Giving each command its own workspace removes the collision outright, and is
-// cheaper than locking for the common case of building and testing at once.
+// test adds a generated runner main and compiles a library as package main. A
+// workspace per command keeps the two from racing on one tree, and is cheaper
+// than locking for the common case of building and testing at once. See
+// lock.go's header for what that race did.
 type Mode string
 
 const (
@@ -249,7 +242,9 @@ func PackageNameIn(dir string) string {
 
 // CleanDeps removes all files from the deps directory.
 func (w *Workspace) CleanDeps() error {
-	if err := os.RemoveAll(w.DepsDir); err != nil && !os.IsNotExist(err) {
+	// deps/ holds transpiled .go files and is open to the same "file is held by
+	// another process" failure as gen/, so it gets the same retry.
+	if err := removeWithRetry(w.DepsDir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return os.MkdirAll(w.DepsDir, 0755)
@@ -266,10 +261,8 @@ func (w *Workspace) CleanGen() error {
 		return fmt.Errorf(
 			"could not clear the workspace's gen directory (%s): %w\n"+
 				"A file in it is still held open by another process. Retry the build; if it\n"+
-				"persists, close whatever is using the file, or give this build a workspace\n"+
-				"of its own:\n"+
-				"  gala <command> --build-dir <dir>   (or set GALA_BUILD_DIR=<dir>)",
-			w.GenDir, err)
+				"persists, close whatever is using the file, or:\n%s",
+			w.GenDir, err, buildDirHint)
 	}
 	return os.MkdirAll(w.GenDir, 0755)
 }
@@ -287,15 +280,11 @@ func (w *Workspace) CleanGen() error {
 // that outlasts the backoff is a real problem the caller must report rather
 // than silently build around, because a stale gen tree compiles stale code.
 func removeWithRetry(dir string) error {
-	if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
+	const ms = time.Millisecond
 
 	var err error
-	for _, delay := range []time.Duration{0, 20, 50, 100, 200, 400, 800} {
-		if delay > 0 {
-			time.Sleep(delay * time.Millisecond)
-		}
+	for _, delay := range []time.Duration{0, 20 * ms, 50 * ms, 100 * ms, 200 * ms, 400 * ms, 800 * ms} {
+		time.Sleep(delay) // RemoveAll already reports success for a path that is not there
 		if err = os.RemoveAll(dir); err == nil {
 			return nil
 		}
@@ -312,25 +301,15 @@ func FindWorkspacesByProject(config *Config, projectDir string) ([]*Workspace, e
 		return nil, err
 	}
 
-	hash := computeHash(absProjectDir)
-
 	var found []*Workspace
 	for _, mode := range []Mode{ModeBuild, ModeTest} {
-		workspaceDir := filepath.Join(config.BuildDir, workspaceDirName(hash, mode))
-		if info, statErr := os.Stat(workspaceDir); statErr != nil || !info.IsDir() {
-			continue
+		ws, wsErr := NewWorkspace(config, absProjectDir, mode)
+		if wsErr != nil {
+			return nil, wsErr
 		}
-		found = append(found, &Workspace{
-			Config:     config,
-			ProjectDir: absProjectDir,
-			Mode:       mode,
-			Hash:       hash,
-			Dir:        workspaceDir,
-			GenDir:     filepath.Join(workspaceDir, "gen"),
-			DepsDir:    filepath.Join(workspaceDir, "deps"),
-			GoModPath:  filepath.Join(workspaceDir, "go.mod"),
-			GoSumPath:  filepath.Join(workspaceDir, "go.sum"),
-		})
+		if ws.Exists() {
+			found = append(found, ws)
+		}
 	}
 
 	if len(found) == 0 {

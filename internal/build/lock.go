@@ -31,13 +31,34 @@ const (
 	// lockStale is how long a lock file may go untouched before a waiter
 	// treats it as abandoned. A build refreshes its lock well inside this
 	// window, so only a killed process leaves one behind.
-	lockStale = 2 * time.Minute
+	//
+	// This is also how long the next build waits after someone interrupts a
+	// build with Ctrl-C: the signal kills the process without releasing the
+	// lock, so the file sits there until it goes stale. Kept to a minute, at
+	// twelve times the heartbeat, to bound that wait while leaving a wide
+	// margin for a machine too loaded to tick on time. Checking whether the
+	// recorded pid is still alive would remove the wait entirely, but is
+	// meaningfully harder to do portably than it looks — os.FindProcess
+	// succeeds for dead pids on Windows.
+	lockStale = time.Minute
 
 	// lockHeartbeat is how often the holder touches the lock to prove it is
 	// alive. Comfortably shorter than lockStale so a slow build is never
 	// mistaken for a dead one.
-	lockHeartbeat = 20 * time.Second
+	lockHeartbeat = 5 * time.Second
+
+	// workspaceLockTimeout is how long a build waits for another gala process
+	// to release the workspace before giving up. Generous enough to cover a
+	// cold build of a large project, short enough that a genuinely wedged
+	// workspace is reported rather than waited on forever.
+	workspaceLockTimeout = 10 * time.Minute
 )
+
+// buildDirHint is the "how to proceed" line shared by every error that a caller
+// can resolve by giving the build a private workspace. One copy, because the
+// flag and the environment variable are named in it.
+const buildDirHint = "Give this build a workspace of its own:\n" +
+	"  gala <command> --build-dir <dir>   (or set GALA_BUILD_DIR=<dir>)"
 
 // ErrLockBusy reports that another process holds the workspace and did not
 // release it within the timeout.
@@ -82,12 +103,9 @@ func (w *Workspace) Lock(timeout time.Duration) (*lockHandle, error) {
 
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			return nil, fmt.Errorf(
-				"%w: %s\n"+
-					"held by: %s\n"+
-					"Another gala process is building this project. Wait for it to finish, or\n"+
-					"give this build its own workspace:\n"+
-					"  gala <command> --build-dir <dir>   (or set GALA_BUILD_DIR=<dir>)",
-				ErrLockBusy, w.Dir, holderDescription(path))
+				"%w: %s\nheld by: %s\n"+
+					"Another gala process is building this project. Wait for it to finish, or\n%s",
+				ErrLockBusy, w.Dir, holderDescription(path), buildDirHint)
 		}
 
 		time.Sleep(lockPoll)
@@ -162,9 +180,10 @@ func holderDescription(path string) string {
 	if err != nil {
 		return "unknown process"
 	}
-	fields := strings.Fields(strings.ReplaceAll(strings.TrimSpace(string(content)), "\n", " "))
-	if len(fields) == 0 {
-		return "unknown process"
+	// Fields splits on all whitespace, newlines included, so this collapses the
+	// lock file's key=value lines onto one.
+	if s := strings.Join(strings.Fields(string(content)), " "); s != "" {
+		return s
 	}
-	return strings.Join(fields, " ")
+	return "unknown process"
 }

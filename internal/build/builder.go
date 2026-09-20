@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"martianoff/gala/galaerr"
 	"martianoff/gala/internal/depman/fetch"
@@ -123,16 +122,9 @@ func (b *Builder) Build(outputPath string) (string, error) {
 		if b.verbose && err == nil {
 			fmt.Printf("GALA version changed (%s -> %s), invalidating workspace\n", string(oldVer), b.stdlibVersion)
 		}
-		os.RemoveAll(b.workspace.GenDir)
-		os.MkdirAll(b.workspace.GenDir, 0755)
-		os.RemoveAll(b.workspace.DepsDir)
-		os.MkdirAll(b.workspace.DepsDir, 0755)
-		// Remove stale hash files
-		os.Remove(filepath.Join(b.workspace.Dir, ".gala-source-hash"))
-		os.Remove(filepath.Join(b.workspace.Dir, ".gala-deps-hash"))
-		os.Remove(filepath.Join(b.workspace.Dir, "go.mod"))
-		os.Remove(filepath.Join(b.workspace.Dir, "go.sum"))
-		os.WriteFile(versionFile, []byte(b.stdlibVersion), 0644)
+		if err := b.invalidateWorkspace(versionFile); err != nil {
+			return "", err
+		}
 	}
 
 	// Step 2: Ensure stdlib is extracted to versioned cache
@@ -1083,6 +1075,21 @@ func (b *Builder) generateGoMod() error {
 		fmt.Println("Generating go.mod...")
 	}
 
+	// The project's own packages are compiled from gen/, so every self-import
+	// must have been rewritten to the workspace module. One that survived means
+	// the gen tree is inconsistent, and the import resolves against the module
+	// proxy instead — downloading a *published* version of the module being
+	// built. `go mod tidy` fails on that with the unhelpful "found ... but does
+	// not contain package"; a build that skips tidy is worse, because
+	// `go build` can satisfy the import from an already-populated module cache
+	// and silently compile published sources in place of the ones on disk.
+	//
+	// Checked before the go.mod caching decision below for exactly that reason:
+	// it is a post-condition of transpilation, not of go.mod generation.
+	if err := b.verifyNoSelfImports(); err != nil {
+		return err
+	}
+
 	gen := NewGoModGenerator(b.config)
 	// Propagate the project directory so local replace directives (paths
 	// relative to the user's gala.mod) resolve against the correct root.
@@ -1106,16 +1113,6 @@ func (b *Builder) generateGoMod() error {
 			fmt.Println("Downloading Go dependencies...")
 		}
 
-		// The project's own packages are compiled from gen/, so every
-		// self-import must have been rewritten to the workspace module. One
-		// that survived means the gen tree is inconsistent, and `go mod tidy`
-		// would try to satisfy it from the network — downloading a *published*
-		// version of the module being built, then failing with the unhelpful
-		// "found ... but does not contain package". Refuse first, and say why.
-		if err := b.verifyNoSelfImports(); err != nil {
-			return err
-		}
-
 		cmd := exec.Command("go", "mod", "tidy")
 		cmd.Dir = b.workspace.Dir
 		cmd.Env = append(os.Environ(), "GOMODCACHE="+b.config.GoPkgDir)
@@ -1137,11 +1134,28 @@ func (b *Builder) generateGoMod() error {
 	return nil
 }
 
-// workspaceLockTimeout is how long a build waits for another gala process to
-// release the workspace before giving up. Generous enough to cover a cold build
-// of a large project, short enough that a genuinely wedged workspace is
-// reported rather than waited on forever.
-const workspaceLockTimeout = 10 * time.Minute
+// invalidateWorkspace clears everything derived from the previous toolchain
+// version and records the new one. A stdlib change invalidates transpiled
+// output wholesale, so gen/, deps/ and the caching markers all go.
+//
+// It routes through CleanGen / CleanDeps rather than removing the trees inline:
+// those carry the retry and the actionable error for a directory another
+// process still holds open, and a version change is a likely moment to meet one
+// — the previous build may only just have exited. A failure to clear is
+// reported, never ignored, because building on a half-cleared tree compiles a
+// mix of two toolchains' output.
+func (b *Builder) invalidateWorkspace(versionFile string) error {
+	if err := b.workspace.CleanGen(); err != nil {
+		return err
+	}
+	if err := b.workspace.CleanDeps(); err != nil {
+		return fmt.Errorf("clearing transpiled dependencies: %w", err)
+	}
+	for _, name := range []string{".gala-source-hash", ".gala-deps-hash", "go.mod", "go.sum"} {
+		os.Remove(filepath.Join(b.workspace.Dir, name)) // absent is the normal case
+	}
+	return os.WriteFile(versionFile, []byte(b.stdlibVersion), 0644)
+}
 
 // verifyNoSelfImports checks that no generated file still imports the project's
 // own Go module path. Those imports are rewritten to the workspace module
@@ -1158,7 +1172,7 @@ func (b *Builder) verifyNoSelfImports() error {
 		return nil
 	}
 
-	imports, err := CollectImports(b.workspace.GenDir)
+	imports, err := CollectImportsRecursive(b.workspace.GenDir)
 	if err != nil {
 		return nil // the build's own steps report a broken gen tree better
 	}
@@ -1179,9 +1193,8 @@ func (b *Builder) verifyNoSelfImports() error {
 			"  %s\n"+
 			"These imports should have been rewritten to the workspace module. This usually means\n"+
 			"another gala process was using the same workspace (%s).\n"+
-			"Re-run the build; if it persists, run `gala clean` or give this build its own workspace:\n"+
-			"  gala <command> --build-dir <dir>   (or set GALA_BUILD_DIR=<dir>)",
-		projectModule, strings.Join(leaked, "\n  "), b.workspace.Dir)
+			"Re-run the build; if it persists, run `gala clean`, or:\n%s",
+		projectModule, strings.Join(leaked, "\n  "), b.workspace.Dir, buildDirHint)
 }
 
 // ensureGoToolchain verifies that the Go toolchain is available on PATH.
@@ -1434,15 +1447,9 @@ func (b *Builder) Test(verbose bool) error {
 		if b.verbose && err == nil {
 			fmt.Printf("GALA version changed (%s -> %s), invalidating workspace\n", string(oldVer), b.stdlibVersion)
 		}
-		os.RemoveAll(b.workspace.GenDir)
-		os.MkdirAll(b.workspace.GenDir, 0755)
-		os.RemoveAll(b.workspace.DepsDir)
-		os.MkdirAll(b.workspace.DepsDir, 0755)
-		os.Remove(filepath.Join(b.workspace.Dir, ".gala-source-hash"))
-		os.Remove(filepath.Join(b.workspace.Dir, ".gala-deps-hash"))
-		os.Remove(filepath.Join(b.workspace.Dir, "go.mod"))
-		os.Remove(filepath.Join(b.workspace.Dir, "go.sum"))
-		os.WriteFile(versionFile, []byte(b.stdlibVersion), 0644)
+		if err := b.invalidateWorkspace(versionFile); err != nil {
+			return err
+		}
 	}
 
 	// Step 2: Ensure stdlib is extracted
@@ -1501,14 +1508,17 @@ func (b *Builder) Test(verbose bool) error {
 	rootPkgName := rootPackageName(sourceFiles, b.workspace.ProjectDir)
 	isLib := rootPkgName != "main"
 
-	// Always force-retranspile for tests (test files change independently).
-	// Dropping the source hash matters as much as wiping gen/: the two commands
-	// share one gen tree, so a later `gala build` that trusted the hash would
-	// skip transpiling and compile the test runner left behind here.
+	// Always force-retranspile for tests: the test files change independently of
+	// the sources, and nothing on this path records a hash to compare against.
+	//
+	// This used to also delete .gala-source-hash, because build and test shared
+	// one gen tree and a later `gala build` that trusted the hash would compile
+	// the test runner left behind here. They no longer share one (see Mode), and
+	// only the build path ever writes that file, so the removal was deleting a
+	// name that does not exist in this workspace.
 	if err := b.workspace.CleanGen(); err != nil {
 		return fmt.Errorf("cleaning gen dir: %w", err)
 	}
-	os.Remove(filepath.Join(b.workspace.Dir, ".gala-source-hash"))
 
 	// Step 5: Transpile files
 	if isLib {
