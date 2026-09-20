@@ -40,6 +40,7 @@ go_test(
         "gomod_test.go",
         "nested_subpackage_test.go",
         "sourcehash_test.go",
+        "stdlib_extract_race_test.go",
         "sourcemap_stacktrace_test.go",
         "main_package_test.go",
         "transpile_batch_static_test.go",

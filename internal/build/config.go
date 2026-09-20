@@ -55,11 +55,17 @@ func SetBuildDirOverride(dir string) {
 // GALA_BUILD_DIR, then GalaHome/build.
 //
 // This is deliberately separate from GALA_HOME. A build workspace is the only
-// directory a build mutates; the caches beside it (pkg, stdlib, go) are large,
-// read-mostly, and safe to share. Redirecting the whole home to isolate a build
-// forces a caller to re-download everything, so concurrent builds — CI matrices,
-// several checkouts of one project, an editor building while a test run is in
-// flight — get a knob that moves only what needs to be private.
+// directory a build rewrites on every invocation; the caches beside it (pkg,
+// stdlib, go) are large and read-mostly, so redirecting the whole home to
+// isolate a build forces a caller to re-download everything. Concurrent builds
+// — CI matrices, several checkouts of one project, an editor building while a
+// test run is in flight — get a knob that moves only what needs to be private.
+//
+// Read-mostly is not read-only: the stdlib cache is rewritten when the embedded
+// snapshot changes, and the module caches are written when a dependency is
+// fetched. Those are shared across projects and are NOT moved by this setting,
+// so they carry their own coordination rather than relying on it — see
+// ensureStdlibExtracted.
 func defaultBuildDir(galaHome string) string {
 	if buildDirOverride != "" {
 		return buildDirOverride
