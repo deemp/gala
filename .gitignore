@@ -147,3 +147,8 @@ BUGS.MD
 # bazel-bin/ normally; if they show up in the source tree it's because a
 # gala CLI run leaked them into a test fixture, which we don't track.
 bazel_test_fixtures/**/*.gen.go
+
+# Per-developer Bazel settings, pulled in by the try-import at the end of
+# .bazelrc. Machine-specific paths (e.g. --disk_cache) belong here, never
+# in the checked-in .bazelrc.
+.bazelrc.user

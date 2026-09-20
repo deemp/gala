@@ -76,8 +76,15 @@ Two things to know:
 
 ### Prerequisites
 
-- **Bazel** (via Bazelisk): install from https://github.com/bazelbuild/bazelisk
+- **Bazel** (via Bazelisk): install from https://github.com/bazelbuild/bazelisk.
+  Use Bazelisk, not a directly installed `bazel` — only Bazelisk reads
+  `//.bazelversion`, and the pinned version matters: the repo contents cache
+  that keeps extracted toolchains from being duplicated into every worktree's
+  output base only exists from Bazel 8.3. Check with `bazel --version`.
 - **Go SDK**: required for Go type inference. Ensure `go` is on PATH or set `GOROOT`.
+
+Builds are disk-hungry and need occasional maintenance — see
+[docs/BUILD_DISK_USAGE.MD](docs/BUILD_DISK_USAGE.MD) and `tools/bazel_gc.sh`.
 
 ### How Bazel finds the Go SDK
 
