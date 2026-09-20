@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"martianoff/gala/internal/stdlib"
 )
@@ -94,36 +95,89 @@ func (c *Config) checkStdlibVersionDir(dir string) error {
 // extracted reports whether files were (re-)written, which callers use for
 // verbose output.
 //
-// There is no cross-process lock. Two binaries that normalize to the same
+// Re-extraction is serialized on the stdlib cache root and installs a fully
+// staged tree with a single rename, so two binaries that normalize to the same
 // version but carry different snapshots — two unstamped "dev" builds from
-// different trees — will each wipe and rewrite the other's copy, and a third
-// process reading the directory at that moment can see it half-written.
-// Released binaries carry distinct versions and so distinct directories, and a
-// developer's CLI and LSP come from one tree, so this is narrow; it is also
-// noisy and self-correcting, unlike the silent stale cache it replaces.
+// different trees — no longer wipe and rewrite each other's copy. They will
+// still take turns replacing it, which is noisy and self-correcting; what is
+// gone is the window where a third process reading the directory as a
+// transpiler search path saw it half-written.
 func (c *Config) ensureStdlibExtracted(version string) (dir string, extracted bool, err error) {
 	stdlibDir := c.StdlibVersionDir(version)
 	markerPath := filepath.Join(stdlibDir, stdlibMarkerName)
 	want := snapshotFingerprint(version)
 
+	// Fast path, taken without any lock: a matching marker means some process
+	// finished a complete extraction, and the directory is read-only from here.
 	if got, readErr := os.ReadFile(markerPath); readErr == nil && string(got) == want {
 		return stdlibDir, false, nil
 	}
 
-	// Stale or absent: drop whatever is there and write the snapshot afresh.
-	if removeErr := c.removeStdlibVersionDir(stdlibDir); removeErr != nil {
-		return "", false, removeErr
+	// Everything below writes to the SHARED stdlib cache, which every project's
+	// build reads as a transpiler search path. Two builds re-extracting at once
+	// would each delete the other's half-written tree, so extraction is
+	// serialized on the cache root. Different versions serialize too; extraction
+	// happens about once per toolchain upgrade, so that costs nothing.
+	lock, lockErr := lockDir(c.StdlibDir, stdlibLockTimeout)
+	if lockErr != nil {
+		return "", false, lockErr
 	}
-	if mkErr := os.MkdirAll(stdlibDir, 0755); mkErr != nil {
-		return "", false, fmt.Errorf("creating stdlib directory: %w", mkErr)
+	defer lock.Release()
+
+	// Re-check under the lock: whoever we queued behind has very likely just
+	// done this work, and re-extracting on top of it would be pure waste.
+	if got, readErr := os.ReadFile(markerPath); readErr == nil && string(got) == want {
+		return stdlibDir, false, nil
 	}
-	if extractErr := stdlib.ExtractTo(stdlibDir); extractErr != nil {
-		return "", false, fmt.Errorf("extracting stdlib: %w", extractErr)
-	}
-	if writeErr := os.WriteFile(markerPath, []byte(want), 0644); writeErr != nil {
-		return "", false, fmt.Errorf("writing stdlib marker: %w", writeErr)
+
+	if err := c.extractStdlibVersion(stdlibDir, want); err != nil {
+		return "", false, err
 	}
 	return stdlibDir, true, nil
+}
+
+// stdlibLockTimeout bounds the wait for another process's extraction. Writing
+// the embedded snapshot takes well under a second, so a wait this long means
+// something is wedged rather than slow.
+const stdlibLockTimeout = 2 * time.Minute
+
+// extractStdlibVersion writes the snapshot into a private staging directory and
+// only then moves it into place.
+//
+// Extracting into stdlibDir directly would publish a half-populated cache: the
+// old contents are deleted first, so for the length of the extraction every
+// concurrent build resolving its transpiler search path sees files that exist
+// one moment and not the next. Staging shrinks that window to a single rename,
+// and the marker is inside the staged tree, so the directory is never visible
+// without the marker that certifies it complete.
+func (c *Config) extractStdlibVersion(stdlibDir, want string) error {
+	staging := fmt.Sprintf("%s.staging-%d", stdlibDir, os.Getpid())
+
+	// A previous run killed mid-extraction can leave staging behind.
+	if err := os.RemoveAll(staging); err != nil {
+		return fmt.Errorf("clearing stdlib staging directory: %w", err)
+	}
+	defer os.RemoveAll(staging) // no-op once the rename below succeeds
+
+	if err := os.MkdirAll(staging, 0755); err != nil {
+		return fmt.Errorf("creating stdlib staging directory: %w", err)
+	}
+	if err := stdlib.ExtractTo(staging); err != nil {
+		return fmt.Errorf("extracting stdlib: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(staging, stdlibMarkerName), []byte(want), 0644); err != nil {
+		return fmt.Errorf("writing stdlib marker: %w", err)
+	}
+
+	// Swap. The guard in removeStdlibVersionDir still applies: a degenerate
+	// version string must not turn this into a delete of the cache root.
+	if err := c.removeStdlibVersionDir(stdlibDir); err != nil {
+		return err
+	}
+	if err := os.Rename(staging, stdlibDir); err != nil {
+		return fmt.Errorf("installing extracted stdlib: %w", err)
+	}
+	return nil
 }
 
 // removeStdlibVersionDir deletes a versioned stdlib directory after checking
