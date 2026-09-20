@@ -3,6 +3,7 @@ package build
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -134,8 +135,44 @@ func (w *Workspace) Ensure() error {
 }
 
 // Clean removes the workspace directory.
+//
+// It takes the lock first. Deleting a workspace a build is using is the same
+// corruption the lock exists to prevent — worse, actually, since it removes the
+// running build's lock file along with its gen tree, so the next build sees an
+// unlocked workspace and starts writing into the wreckage. A workspace that is
+// busy is reported rather than emptied.
 func (w *Workspace) Clean() error {
-	return os.RemoveAll(w.Dir)
+	removed, err := removeWorkspaceDir(w.Dir)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return fmt.Errorf("%w: %s\nheld by: %s\nA build is using this workspace — wait for it to finish, or stop it",
+			ErrLockBusy, w.Dir, holderDescription(filepath.Join(w.Dir, lockFileName)))
+	}
+	return nil
+}
+
+// removeWorkspaceDir deletes one workspace under its lock, and reports whether
+// it did. A workspace another gala process holds is left alone: false, no error.
+//
+// The lock is Discarded rather than Released — the file is gone with the
+// directory, and removing it by path could unlink a lock a later process has
+// already taken.
+func removeWorkspaceDir(dir string) (bool, error) {
+	lock, err := lockDir(dir, cleanLockTimeout)
+	if err != nil {
+		if errors.Is(err, ErrLockBusy) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer lock.Discard()
+
+	if err := os.RemoveAll(dir); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Exists returns true if the workspace directory exists.
@@ -319,44 +356,66 @@ func FindWorkspacesByProject(config *Config, projectDir string) ([]*Workspace, e
 }
 
 // CleanAllWorkspaces removes all build workspaces.
-func CleanAllWorkspaces(config *Config) error {
-	return os.RemoveAll(config.BuildDir)
+// It removes each workspace under its own lock, so a sweep cannot delete a
+// running build's tree. Workspaces that are busy are counted and left; one
+// active build should not stop the other forty from being cleaned.
+func CleanAllWorkspaces(config *Config) (removed int, busy int, err error) {
+	return sweepWorkspaces(config, func(string, os.FileInfo) bool { return true })
 }
 
-// CleanStaleWorkspaces removes workspaces older than the given duration.
-func CleanStaleWorkspaces(config *Config, maxAge time.Duration) (int, error) {
+// CleanStaleWorkspaces removes workspaces older than the given duration, each
+// under its own lock. Busy workspaces are counted and left — and a workspace
+// with a live build is by definition not stale, whatever its marker says.
+func CleanStaleWorkspaces(config *Config, maxAge time.Duration) (removed int, busy int, err error) {
+	return sweepWorkspaces(config, func(dir string, marker os.FileInfo) bool {
+		if marker == nil {
+			return true // no marker: not a workspace this tool wrote, or a half-made one
+		}
+		return time.Since(marker.ModTime()) > maxAge
+	})
+}
+
+// sweepWorkspaces removes every workspace directory under BuildDir that `want`
+// selects, each under its own lock. It is the shared body of the --all and
+// --stale sweeps, which differ only in that predicate.
+//
+// `want` receives the workspace directory and its .gala-workspace marker, or
+// nil when there is no readable marker.
+func sweepWorkspaces(config *Config, want func(dir string, marker os.FileInfo) bool) (removed int, busy int, err error) {
 	entries, err := os.ReadDir(config.BuildDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, nil
+			return 0, 0, nil
 		}
-		return 0, err
+		return 0, 0, err
 	}
 
-	cleaned := 0
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 
 		workspaceDir := filepath.Join(config.BuildDir, entry.Name())
-		markerPath := filepath.Join(workspaceDir, ".gala-workspace")
-
-		info, err := os.Stat(markerPath)
-		if err != nil {
-			// No marker file, remove workspace
-			os.RemoveAll(workspaceDir)
-			cleaned++
+		marker, statErr := os.Stat(filepath.Join(workspaceDir, ".gala-workspace"))
+		if statErr != nil {
+			marker = nil
+		}
+		if !want(workspaceDir, marker) {
 			continue
 		}
 
-		if time.Since(info.ModTime()) > maxAge {
-			os.RemoveAll(workspaceDir)
-			cleaned++
+		ok, rmErr := removeWorkspaceDir(workspaceDir)
+		if rmErr != nil {
+			return removed, busy, rmErr
+		}
+		if ok {
+			removed++
+		} else {
+			busy++
 		}
 	}
 
-	return cleaned, nil
+	return removed, busy, nil
 }
 
 // ListWorkspaces returns all existing workspaces with their project paths.

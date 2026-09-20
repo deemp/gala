@@ -52,6 +52,13 @@ const (
 	// cold build of a large project, short enough that a genuinely wedged
 	// workspace is reported rather than waited on forever.
 	workspaceLockTimeout = 10 * time.Minute
+
+	// cleanLockTimeout is how long `gala clean` waits for a workspace before
+	// leaving it alone. Much shorter than a build's wait: someone who typed a
+	// clean wants an answer, and "a build is using this" is a useful answer.
+	// The few seconds are there to ride out a lock that is mid-handoff, not to
+	// outlast a build.
+	cleanLockTimeout = 3 * time.Second
 )
 
 // buildDirHint is the "how to proceed" line shared by every error that a caller
@@ -78,11 +85,19 @@ type lockHandle struct {
 // The lock is advisory and cooperative — it exists to serialize this tool
 // against itself, not to defend the directory from arbitrary writers.
 func (w *Workspace) Lock(timeout time.Duration) (*lockHandle, error) {
-	if err := os.MkdirAll(w.Dir, 0755); err != nil {
+	return lockDir(w.Dir, timeout)
+}
+
+// lockDir is Lock over a bare directory path. `gala clean` sweeps workspaces it
+// finds on disk rather than ones it constructed, so it has a directory and no
+// Workspace — and deleting a workspace needs the lock just as much as building
+// one does.
+func lockDir(dir string, timeout time.Duration) (*lockHandle, error) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("creating workspace dir: %w", err)
 	}
 
-	path := filepath.Join(w.Dir, lockFileName)
+	path := filepath.Join(dir, lockFileName)
 	deadline := time.Time{}
 	if timeout > 0 {
 		deadline = time.Now().Add(timeout)
@@ -105,7 +120,7 @@ func (w *Workspace) Lock(timeout time.Duration) (*lockHandle, error) {
 			return nil, fmt.Errorf(
 				"%w: %s\nheld by: %s\n"+
 					"Another gala process is building this project. Wait for it to finish, or\n%s",
-				ErrLockBusy, w.Dir, holderDescription(path), buildDirHint)
+				ErrLockBusy, dir, holderDescription(path), buildDirHint)
 		}
 
 		time.Sleep(lockPoll)
@@ -148,12 +163,27 @@ func (h *lockHandle) heartbeat() {
 
 // Release drops the lock.
 func (h *lockHandle) Release() {
+	h.finish(true)
+}
+
+// Discard stops the heartbeat but leaves the lock file alone. It is what a
+// caller that has just deleted the whole workspace wants: the lock file went
+// with the directory, and unlinking "it" by path could remove a lock that
+// another process created in the window since — handing two builds the same
+// fresh workspace.
+func (h *lockHandle) Discard() {
+	h.finish(false)
+}
+
+func (h *lockHandle) finish(remove bool) {
 	if h == nil || h.done {
 		return
 	}
 	h.done = true
 	close(h.released)
-	_ = os.Remove(h.path)
+	if remove {
+		_ = os.Remove(h.path)
+	}
 }
 
 // breakIfStale removes a lock whose holder stopped refreshing it, and reports
