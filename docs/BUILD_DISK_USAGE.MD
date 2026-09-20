@@ -14,7 +14,7 @@ worktrees is tens of gigabytes of dead cache.
 Two further multipliers apply *inside* each output base:
 
 - **Extracted external repositories.** The pinned Go SDK unpacks to ~207 MB.
-  Before Bazel 8.3 that extraction happened once per output base.
+  Before Bazel 9 that extraction happened once per output base.
   `--repository_cache` only cached the *downloaded archive*, not the unpacked
   result.
 - **Compiled output.** GALA's generated Go instantiates a large number of Go
@@ -24,18 +24,40 @@ Two further multipliers apply *inside* each output base:
 
 ## What the repo does about it
 
-### A Bazel floor of 8.8.0
+### A pinned Bazel 9.2.0
 
-`//.bazelversion` pins Bazel 8.8.0. The floor that matters is **8.3**, which is
-where the **repo contents cache** arrived: a store of *extracted* repository
-directories shared across workspaces, enabled by default at
-`{--repository_cache}/contents`. With it, a pinned toolchain is unpacked once
-per version for the whole machine rather than once per output base.
+`//.bazelversion` pins Bazel 9.2.0, for the **repo contents cache**: a store of
+*extracted* repository directories shared across workspaces, so a pinned
+toolchain is unpacked once per version for the whole machine rather than once
+per output base.
+
+The version matters more than it looks. The flag was added in Bazel 8.3, but
+there it defaults to the empty string — and an empty string means *disabled*:
+
+```
+bazel 8.8.0:  --repo_contents_cache (a path; default: "")
+              "An empty string as argument requests the repo contents cache to
+               be disabled."
+
+bazel 9.2.0:  --repo_contents_cache (a path; default: see description)
+              "... otherwise the default of `{--repository_cache}/contents`"
+```
+
+So on 8.x you get the cache only if you pass `--repo_contents_cache=<path>`
+explicitly; from 9.x it is on by default. We pin 9.2.0 and rely on the default.
 
 This requires [Bazelisk](https://github.com/bazelbuild/bazelisk), which reads
 `.bazelversion`. A directly installed `bazel` binary ignores the file and keeps
 whatever version it happens to be, so check `bazel --version` if you are not
 seeing the benefit.
+
+To confirm the cache is actually being used, look for a `contents/` directory
+next to the download cache after a fetch:
+
+```shell
+ls "$(bazel info output_base)/../cache/repos/v1/"
+# content_addressable  contents
+```
 
 ### `tools/bazel_gc.sh`
 
@@ -43,13 +65,17 @@ Reports every output base with its size and owning workspace, and flags the ones
 whose workspace no longer exists:
 
 ```shell
-tools/bazel_gc.sh            # report only
-tools/bazel_gc.sh --prune    # delete the orphaned output bases
+tools/bazel_gc.sh                 # report only, largest first
+tools/bazel_gc.sh --prune         # delete the orphaned ones (asks first)
+tools/bazel_gc.sh --prune --yes   # ... without asking
 ```
 
 The shared `install/` and `cache/` directories are never touched. Live output
 bases are never touched. Only bases whose recorded workspace is gone are
-eligible.
+eligible, and `--prune` confirms before deleting because that test is only as
+good as the path recorded in the marker.
+
+Set `BAZEL_OUTPUT_USER_ROOT` if you build with a custom `--output_user_root`.
 
 ## What you can do locally
 
@@ -107,4 +133,4 @@ every test fails with "The system cannot find the path specified".
   becomes a full rebuild.
 - **`--noenable_runfiles`** on Windows, as above.
 - **`--repository_cache` alone** for the extraction cost. It caches downloads,
-  not unpacked directories. That is what the repo contents cache added in 8.3.
+  not unpacked directories. That is what the repo contents cache adds.

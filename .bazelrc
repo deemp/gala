@@ -42,7 +42,8 @@ build --worker_quit_after_build
 #   * The repo contents cache, which holds *extracted* external repositories
 #     shared across workspaces, so a pinned toolchain is unpacked once per
 #     version for the whole machine instead of once per output base. It is on
-#     by default at {--repository_cache}/contents, but only from Bazel 8.3 —
+#     by default at {--repository_cache}/contents from Bazel 9 onwards (8.3
+#     added the flag but defaults it to "", which means disabled) —
 #     hence the floor in //.bazelversion. Before that the Go SDK alone cost
 #     ~207 MB in every output base.
 #   * tools/bazel_gc.sh, which reports every output base with its size and

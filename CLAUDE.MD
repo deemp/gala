@@ -80,7 +80,7 @@ Two things to know:
   Use Bazelisk, not a directly installed `bazel` — only Bazelisk reads
   `//.bazelversion`, and the pinned version matters: the repo contents cache
   that keeps extracted toolchains from being duplicated into every worktree's
-  output base only exists from Bazel 8.3. Check with `bazel --version`.
+  output base is only on by default from Bazel 9. Check with `bazel --version`.
 - **Go SDK**: required for Go type inference. Ensure `go` is on PATH or set `GOROOT`.
 
 Builds are disk-hungry and need occasional maintenance — see
