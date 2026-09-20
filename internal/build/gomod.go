@@ -2,6 +2,7 @@ package build
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -411,6 +412,43 @@ func CollectImports(genDir string) ([]string, error) {
 	}
 
 	var result []string
+	for imp := range imports {
+		result = append(result, imp)
+	}
+	sort.Strings(result)
+
+	return result, nil
+}
+
+// CollectImportsRecursive returns every import path in the .go files under dir,
+// including subdirectories.
+//
+// CollectImports deliberately reads only dir's own files: go.mod generation
+// cares about the root package's imports. An invariant that must hold over the
+// whole generated tree has to walk it — a project laying its packages out under
+// gen/<pkg>/ keeps nothing at the root for the shallow read to see.
+func CollectImportsRecursive(dir string) ([]string, error) {
+	imports := make(map[string]bool)
+
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".go") {
+			return nil
+		}
+		content, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return nil // an unreadable file is the build's problem to report, not this scan's
+		}
+		extractImports(string(content), imports)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]string, 0, len(imports))
 	for imp := range imports {
 		result = append(result, imp)
 	}

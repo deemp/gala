@@ -12,6 +12,22 @@ import (
 	"time"
 )
 
+// Mode distinguishes the workspaces one project can have.
+//
+// `gala build` and `gala test` generate different trees from the same sources:
+// test adds a generated runner main and compiles a library as package main. A
+// workspace per command keeps the two from racing on one tree, and is cheaper
+// than locking for the common case of building and testing at once. See
+// lock.go's header for what that race did.
+type Mode string
+
+const (
+	// ModeBuild is the workspace for `gala build` and `gala run`.
+	ModeBuild Mode = "build"
+	// ModeTest is the workspace for `gala test`.
+	ModeTest Mode = "test"
+)
+
 // Workspace represents a build workspace for a GALA project.
 type Workspace struct {
 	// Config is the build configuration.
@@ -19,6 +35,9 @@ type Workspace struct {
 
 	// ProjectDir is the absolute path to the project directory (where gala.mod is).
 	ProjectDir string
+
+	// Mode is the command family this workspace serves; see Mode.
+	Mode Mode
 
 	// Hash is the unique identifier for this workspace (based on ProjectDir).
 	Hash string
@@ -39,9 +58,9 @@ type Workspace struct {
 	GoSumPath string
 }
 
-// NewWorkspace creates a new workspace for the given project directory.
-// The projectDir should be the directory containing gala.mod.
-func NewWorkspace(config *Config, projectDir string) (*Workspace, error) {
+// NewWorkspace creates a new workspace for the given project directory and
+// mode. The projectDir should be the directory containing gala.mod.
+func NewWorkspace(config *Config, projectDir string, mode Mode) (*Workspace, error) {
 	absProjectDir, err := filepath.Abs(projectDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving project path: %w", err)
@@ -50,11 +69,12 @@ func NewWorkspace(config *Config, projectDir string) (*Workspace, error) {
 	// Compute hash from absolute path
 	hash := computeHash(absProjectDir)
 
-	workspaceDir := filepath.Join(config.BuildDir, hash)
+	workspaceDir := filepath.Join(config.BuildDir, workspaceDirName(hash, mode))
 
 	return &Workspace{
 		Config:     config,
 		ProjectDir: absProjectDir,
+		Mode:       mode,
 		Hash:       hash,
 		Dir:        workspaceDir,
 		GenDir:     filepath.Join(workspaceDir, "gen"),
@@ -62,6 +82,16 @@ func NewWorkspace(config *Config, projectDir string) (*Workspace, error) {
 		GoModPath:  filepath.Join(workspaceDir, "go.mod"),
 		GoSumPath:  filepath.Join(workspaceDir, "go.sum"),
 	}, nil
+}
+
+// workspaceDirName names the per-mode workspace directory. Build keeps the bare
+// hash, so workspaces created before modes existed stay valid and anything that
+// learned the path still resolves; every other mode takes a suffix.
+func workspaceDirName(hash string, mode Mode) string {
+	if mode == ModeBuild || mode == "" {
+		return hash
+	}
+	return hash + "-" + string(mode)
 }
 
 // computeHash computes a short hash from the project path.
@@ -212,7 +242,9 @@ func PackageNameIn(dir string) string {
 
 // CleanDeps removes all files from the deps directory.
 func (w *Workspace) CleanDeps() error {
-	if err := os.RemoveAll(w.DepsDir); err != nil && !os.IsNotExist(err) {
+	// deps/ holds transpiled .go files and is open to the same "file is held by
+	// another process" failure as gen/, so it gets the same retry.
+	if err := removeWithRetry(w.DepsDir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return os.MkdirAll(w.DepsDir, 0755)
@@ -225,36 +257,65 @@ func (w *Workspace) DepModuleDir(modulePath, version string) string {
 
 // CleanGen removes all files and subdirectories from the gen directory.
 func (w *Workspace) CleanGen() error {
-	if err := os.RemoveAll(w.GenDir); err != nil {
-		return err
+	if err := removeWithRetry(w.GenDir); err != nil {
+		return fmt.Errorf(
+			"could not clear the workspace's gen directory (%s): %w\n"+
+				"A file in it is still held open by another process. Retry the build; if it\n"+
+				"persists, close whatever is using the file, or:\n%s",
+			w.GenDir, err, buildDirHint)
 	}
 	return os.MkdirAll(w.GenDir, 0755)
 }
 
-// FindWorkspaceByProject finds an existing workspace for a project path.
-func FindWorkspaceByProject(config *Config, projectDir string) (*Workspace, error) {
+// removeWithRetry deletes a tree, retrying briefly before giving up.
+//
+// On Windows a file another process holds open cannot be unlinked, and the
+// delete fails with "The process cannot access the file because it is being
+// used by another process". Moving the directory aside instead does not help:
+// renaming a directory that contains an open file is refused the same way.
+//
+// What does help is waiting. The holders that show up in practice — a test
+// binary that has just exited, a virus scanner, the file indexer — release
+// within milliseconds, so a short backoff clears almost all of them. A holder
+// that outlasts the backoff is a real problem the caller must report rather
+// than silently build around, because a stale gen tree compiles stale code.
+func removeWithRetry(dir string) error {
+	const ms = time.Millisecond
+
+	var err error
+	for _, delay := range []time.Duration{0, 20 * ms, 50 * ms, 100 * ms, 200 * ms, 400 * ms, 800 * ms} {
+		time.Sleep(delay) // RemoveAll already reports success for a path that is not there
+		if err = os.RemoveAll(dir); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// FindWorkspacesByProject finds every existing workspace for a project path —
+// one per mode. Cleaning a project means removing all of them, so this returns
+// a slice rather than the build workspace alone.
+func FindWorkspacesByProject(config *Config, projectDir string) ([]*Workspace, error) {
 	absProjectDir, err := filepath.Abs(projectDir)
 	if err != nil {
 		return nil, err
 	}
 
-	hash := computeHash(absProjectDir)
-	workspaceDir := filepath.Join(config.BuildDir, hash)
-
-	if info, err := os.Stat(workspaceDir); err != nil || !info.IsDir() {
-		return nil, fmt.Errorf("workspace not found for project: %s", projectDir)
+	var found []*Workspace
+	for _, mode := range []Mode{ModeBuild, ModeTest} {
+		ws, wsErr := NewWorkspace(config, absProjectDir, mode)
+		if wsErr != nil {
+			return nil, wsErr
+		}
+		if ws.Exists() {
+			found = append(found, ws)
+		}
 	}
 
-	return &Workspace{
-		Config:     config,
-		ProjectDir: absProjectDir,
-		Hash:       hash,
-		Dir:        workspaceDir,
-		GenDir:     filepath.Join(workspaceDir, "gen"),
-		DepsDir:    filepath.Join(workspaceDir, "deps"),
-		GoModPath:  filepath.Join(workspaceDir, "go.mod"),
-		GoSumPath:  filepath.Join(workspaceDir, "go.sum"),
-	}, nil
+	if len(found) == 0 {
+		return nil, fmt.Errorf("workspace not found for project: %s", projectDir)
+	}
+	return found, nil
 }
 
 // CleanAllWorkspaces removes all build workspaces.

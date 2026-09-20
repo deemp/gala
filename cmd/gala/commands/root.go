@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"martianoff/gala/internal/build"
 )
 
 var rootCmd = &cobra.Command{
@@ -110,4 +112,13 @@ func init() {
 	rootCmd.Flags().StringVarP(&transpileSearch, "search", "s", ".", "Comma-separated search paths")
 	rootCmd.Flags().StringVar(&transpilePackageFiles, "package-files", "", "Comma-separated list of sibling .gala files in the same package")
 	rootCmd.Flags().StringVar(&transpileGoroot, "goroot", "", "Path to Go SDK root (for Go type inference)")
+
+	// See build.defaultBuildDir for why this moves the workspace and not the
+	// whole GALA home.
+	rootCmd.PersistentFlags().StringVar(&buildDir, "build-dir", "",
+		"Directory for build workspaces (default: $GALA_BUILD_DIR, else <gala home>/build)")
+	// Runs after flag parsing, before any command constructs a Config.
+	cobra.OnInitialize(func() { build.SetBuildDirOverride(buildDir) })
 }
+
+var buildDir string

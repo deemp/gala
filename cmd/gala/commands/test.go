@@ -57,7 +57,7 @@ func runTest(cmd *cobra.Command, args []string) {
 	}
 
 	// Create builder
-	builder, err := build.NewBuilder(absProjectDir, Version, testVerbose)
+	builder, err := build.NewBuilderForMode(absProjectDir, Version, testVerbose, build.ModeTest)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
