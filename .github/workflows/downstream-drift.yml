@@ -1,0 +1,111 @@
+name: Downstream drift — build gala_team against moving refs
+
+# Does the current downstream still build against master?
+#
+# This is the counterpart to perf-real-build.yml, and the split is deliberate.
+# That lane measures a build-time budget, so its downstream refs are PINNED:
+# a moving ref makes every run vary two things at once, and any breakage in a
+# dependency lands on whichever gala PR happens to run next. That is not
+# hypothetical — a gala_tui source file added without re-running gazelle left
+# it out of BUILD.bazel, and the failure surfaced on an unrelated gala PR,
+# where it took a trip across two repositories to explain.
+#
+# Pinning fixed that, at the cost of no longer noticing such breakage at all.
+# This lane takes it back on terms that cannot redden someone else's PR:
+#
+#   - schedule and manual dispatch only, never pull_request
+#   - not a required status check, so it gates nothing
+#   - moving refs by design: gala_tui@main, gala_team@master
+#   - no timing budget — the question is "does it build", not "how fast"
+#
+# A red run here means the downstream and master have drifted apart. Fix the
+# drift, then bump the pins in perf-real-build.yml to match.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 05:17 UTC nightly — an hour after the perf lane, so the two do not
+    # contend for runners or for the shared Bazel caches.
+    - cron: "17 5 * * *"
+
+# Checkouts and builds only; the token never needs to write.
+permissions:
+  contents: read
+
+jobs:
+  downstream-drift:
+    name: Build gala_team against master (moving refs)
+    runs-on: ubuntu-latest
+    # Generous: this lane has no budget to enforce, and a cold cache is normal
+    # because it does not share the perf lane's disk-cache key.
+    timeout-minutes: 45
+
+    env:
+      GALA_TUI_REF: main
+      GALA_TEAM_REF: master
+
+    steps:
+      - name: Checkout gala (master)
+        uses: actions/checkout@v4
+        with:
+          path: gala_simple
+
+      - name: Checkout gala_tui
+        uses: actions/checkout@v4
+        with:
+          repository: martianoff/gala-tui
+          ref: ${{ env.GALA_TUI_REF }}
+          path: gala_tui
+
+      - name: Checkout gala_team
+        uses: actions/checkout@v4
+        with:
+          repository: martianoff/gala-team
+          ref: ${{ env.GALA_TEAM_REF }}
+          path: gala_team
+
+      - name: Record what was actually built
+        run: |
+          set -euo pipefail
+          # A drift failure is only actionable if the report names the commits
+          # involved: "main" moves, so the ref alone does not identify a run.
+          echo "gala      $(git -C gala_simple rev-parse HEAD)"
+          echo "gala_tui  $(git -C gala_tui rev-parse HEAD)  (${GALA_TUI_REF})"
+          echo "gala_team $(git -C gala_team rev-parse HEAD)  (${GALA_TEAM_REF})"
+
+      - name: Setup Go
+        id: setup-go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: false
+
+      - name: Export GOROOT
+        run: echo "GOROOT=$(go env GOROOT)" >> "$GITHUB_ENV"
+
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.14.0
+        with:
+          bazelisk-cache: true
+          # A cache key of its own: sharing the perf lane's would let this
+          # lane's moving-ref artifacts influence the timings measured there.
+          disk-cache: downstream-drift-${{ steps.setup-go.outputs.go-version }}
+          repository-cache: true
+
+      - name: Build
+        working-directory: gala_team
+        run: |
+          set -euo pipefail
+          bazel build //cmd:gala_team \
+            --override_module=gala=$GITHUB_WORKSPACE/gala_simple \
+            --override_module=gala_tui=$GITHUB_WORKSPACE/gala_tui \
+            --registry=https://raw.githubusercontent.com/martianoff/rules-gala/main/ \
+            --registry=https://bcr.bazel.build \
+            --action_env=GOROOT="$GOROOT" --action_env=PATH
+
+      - name: Explain a failure
+        if: failure()
+        run: |
+          echo "::notice::gala master and the current downstream have drifted apart."
+          echo "::notice::This lane gates nothing — no PR is blocked by this run."
+          echo "::notice::Fix the drift, then bump the pins in perf-real-build.yml to match."
