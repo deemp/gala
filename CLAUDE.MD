@@ -76,8 +76,22 @@ Two things to know:
 
 ### Prerequisites
 
-- **Bazel** (via Bazelisk): install from https://github.com/bazelbuild/bazelisk
+- **Bazel** (via Bazelisk): install from https://github.com/bazelbuild/bazelisk.
+  Use Bazelisk, **not** a directly installed `bazel` — only Bazelisk reads
+  `//.bazelversion`, which pins 9.2.0. Check with `bazel --version`.
+
+  This is not just a missed optimisation. `MODULE.bazel.lock` is
+  lockFileVersion 28, which Bazel 8 cannot read: a directly installed Bazel 8
+  silently discards it and, under the default `--lockfile_mode=update`,
+  **rewrites the lockfile back to version 16**, dirtying the tree and
+  flip-flopping the file depending on who built last. The pinned version also
+  gets the repo contents cache, which keeps extracted toolchains from being
+  duplicated into every worktree's output base — on by default only from
+  Bazel 9.
 - **Go SDK**: required for Go type inference. Ensure `go` is on PATH or set `GOROOT`.
+
+Builds are disk-hungry and need occasional maintenance — see
+[docs/BUILD_DISK_USAGE.MD](docs/BUILD_DISK_USAGE.MD) and `tools/bazel_gc.sh`.
 
 ### How Bazel finds the Go SDK
 
