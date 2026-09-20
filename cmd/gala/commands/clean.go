@@ -67,23 +67,25 @@ func runClean(cmd *cobra.Command, args []string) {
 	if cleanAll {
 		// Clean all workspaces
 		fmt.Println("Cleaning all build workspaces...")
-		if err := build.CleanAllWorkspaces(config); err != nil {
+		removed, busy, err := build.CleanAllWorkspaces(config)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("Done.")
+		reportSweep(removed, busy)
 		return
 	}
 
 	if cleanStale {
 		// Clean stale workspaces (older than 7 days)
 		fmt.Println("Cleaning stale workspaces...")
-		count, err := build.CleanStaleWorkspaces(config, 7*24*time.Hour)
+		removed, busy, err := build.CleanStaleWorkspaces(config, 7*24*time.Hour)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("Cleaned %d stale workspaces.\n", count)
+		fmt.Printf("Cleaned %d stale workspaces.\n", removed)
+		reportBusy(busy)
 		return
 	}
 
@@ -117,4 +119,20 @@ func runClean(cmd *cobra.Command, args []string) {
 		}
 		fmt.Printf("Cleaned workspace: %s\n", workspace.Dir)
 	}
+}
+
+// reportSweep prints what a whole-directory sweep did.
+func reportSweep(removed, busy int) {
+	fmt.Printf("Cleaned %d workspaces.\n", removed)
+	reportBusy(busy)
+}
+
+// reportBusy notes workspaces a sweep left alone because a build holds them.
+// Silence would be wrong: the user asked for everything to go, and some of it
+// is still there.
+func reportBusy(busy int) {
+	if busy == 0 {
+		return
+	}
+	fmt.Printf("Left %d workspace(s) in use by a running build.\n", busy)
 }

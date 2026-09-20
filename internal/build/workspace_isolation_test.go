@@ -265,3 +265,102 @@ func TestFindWorkspacesByProjectErrorsWhenAbsent(t *testing.T) {
 	_, err := FindWorkspacesByProject(config, t.TempDir())
 	require.Error(t, err)
 }
+
+// Deleting a workspace a build is using is the same corruption the lock exists
+// to prevent, and worse: it removes the running build's lock file along with
+// its gen tree, so the next build sees an unlocked workspace and writes into
+// the wreckage. Clean must refuse.
+func TestCleanRefusesWorkspaceInUse(t *testing.T) {
+	config := isolatedConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	held, err := ws.Lock(time.Second)
+	require.NoError(t, err)
+	defer held.Release()
+
+	err = ws.Clean()
+	require.Error(t, err, "a workspace a build holds must not be deleted")
+	require.ErrorIs(t, err, ErrLockBusy)
+	require.DirExists(t, ws.Dir, "the running build's tree must still be there")
+}
+
+// The ordinary case still works: an idle workspace cleans.
+func TestCleanRemovesIdleWorkspace(t *testing.T) {
+	config := isolatedConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	require.NoError(t, ws.Clean())
+	require.NoDirExists(t, ws.Dir)
+}
+
+// A sweep must not abort on one busy workspace — one active build should not
+// stop the other forty from being cleaned — and must say what it left behind.
+func TestSweepsSkipBusyWorkspacesAndCountThem(t *testing.T) {
+	config := isolatedConfig(t)
+
+	idle, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, idle.Ensure())
+
+	busyWS, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, busyWS.Ensure())
+	held, err := busyWS.Lock(time.Second)
+	require.NoError(t, err)
+	defer held.Release()
+
+	removed, busy, err := CleanAllWorkspaces(config)
+	require.NoError(t, err)
+	require.Equal(t, 1, removed)
+	require.Equal(t, 1, busy)
+
+	require.NoDirExists(t, idle.Dir, "the idle workspace should be gone")
+	require.DirExists(t, busyWS.Dir, "the busy workspace should survive")
+}
+
+// A workspace with a live build is not stale, however old its marker is.
+func TestStaleSweepSkipsBusyWorkspace(t *testing.T) {
+	config := isolatedConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	// Age the marker well past any threshold.
+	marker := filepath.Join(ws.Dir, ".gala-workspace")
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	require.NoError(t, os.Chtimes(marker, old, old))
+
+	held, err := ws.Lock(time.Second)
+	require.NoError(t, err)
+	defer held.Release()
+
+	removed, busy, err := CleanStaleWorkspaces(config, 7*24*time.Hour)
+	require.NoError(t, err)
+	require.Equal(t, 0, removed)
+	require.Equal(t, 1, busy)
+	require.DirExists(t, ws.Dir)
+}
+
+// Discard must leave the lock file alone: after a workspace is deleted, the
+// path may already belong to a lock another process took.
+func TestDiscardLeavesTheLockFile(t *testing.T) {
+	config := isolatedConfig(t)
+	ws, err := NewWorkspace(config, t.TempDir(), ModeBuild)
+	require.NoError(t, err)
+	require.NoError(t, ws.Ensure())
+
+	h, err := ws.Lock(time.Second)
+	require.NoError(t, err)
+
+	lockPath := filepath.Join(ws.Dir, lockFileName)
+	require.FileExists(t, lockPath)
+
+	h.Discard()
+	require.FileExists(t, lockPath, "Discard must not unlink the lock file")
+
+	require.NoError(t, os.Remove(lockPath))
+}
