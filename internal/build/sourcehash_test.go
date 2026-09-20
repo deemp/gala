@@ -38,16 +38,16 @@ func writeSourceTree(t *testing.T) []string {
 func TestComputeSourceHash_TracksStdlibFingerprint(t *testing.T) {
 	files := writeSourceTree(t)
 
-	base := computeSourceHash(files, "dev", "fingerprint-a")
+	base := computeSourceHash(files, "dev", "fingerprint-a", "")
 	require.NotEmpty(t, base)
 
 	t.Run("stable for an unchanged stdlib", func(t *testing.T) {
-		require.Equal(t, base, computeSourceHash(files, "dev", "fingerprint-a"),
+		require.Equal(t, base, computeSourceHash(files, "dev", "fingerprint-a", ""),
 			"identical inputs must not force a needless re-transpile")
 	})
 
 	t.Run("changes when the stdlib changes", func(t *testing.T) {
-		require.NotEqual(t, base, computeSourceHash(files, "dev", "fingerprint-b"),
+		require.NotEqual(t, base, computeSourceHash(files, "dev", "fingerprint-b", ""),
 			"a different stdlib snapshot must invalidate the cached transpile")
 	})
 
@@ -56,15 +56,15 @@ func TestComputeSourceHash_TracksStdlibFingerprint(t *testing.T) {
 		// carries no information here — the fingerprint is the only thing that
 		// can distinguish the two.
 		require.NotEqual(t,
-			computeSourceHash(files, "dev", "fingerprint-a"),
-			computeSourceHash(files, "dev", "fingerprint-b"))
+			computeSourceHash(files, "dev", "fingerprint-a", ""),
+			computeSourceHash(files, "dev", "fingerprint-b", ""))
 	})
 
 	t.Run("still tracks the version and the sources", func(t *testing.T) {
-		require.NotEqual(t, base, computeSourceHash(files, "0.71.0", "fingerprint-a"))
+		require.NotEqual(t, base, computeSourceHash(files, "0.71.0", "fingerprint-a", ""))
 
 		require.NoError(t, os.WriteFile(files[0], []byte("fun main(): Unit = Println(\"bye\")\n"), 0644))
-		require.NotEqual(t, base, computeSourceHash(files, "dev", "fingerprint-a"))
+		require.NotEqual(t, base, computeSourceHash(files, "dev", "fingerprint-a", ""))
 	})
 }
 
@@ -81,8 +81,8 @@ func TestComputeSourceHash_UsesRealEmbeddedFingerprint(t *testing.T) {
 
 	require.NotEmpty(t, stdlib.Fingerprint())
 	require.NotEqual(t,
-		computeSourceHash(files, "dev", stdlib.Fingerprint()),
-		computeSourceHash(files, "dev", ""))
+		computeSourceHash(files, "dev", stdlib.Fingerprint(), ""),
+		computeSourceHash(files, "dev", "", ""))
 }
 
 // TestComputeSourceHash_MissingFileForcesRetranspile documents the existing
@@ -92,7 +92,7 @@ func TestComputeSourceHash_UsesRealEmbeddedFingerprint(t *testing.T) {
 func TestComputeSourceHash_MissingFileForcesRetranspile(t *testing.T) {
 	files := writeSourceTree(t)
 	require.Empty(t, computeSourceHash(append(files, filepath.Join(t.TempDir(), "absent.gala")),
-		"dev", stdlib.Fingerprint()))
+		"dev", stdlib.Fingerprint(), ""))
 }
 
 // TestComputeDepsHash_TracksStdlibFingerprint verifies the sibling cache key

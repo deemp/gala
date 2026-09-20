@@ -438,6 +438,24 @@ func (b *Builder) ensureStdlib() error {
 	return nil
 }
 
+// treeShape describes the layout this builder generates into gen/, for the
+// source-hash key. Empty is the plain build — library at the gen root. A
+// multi-package build (a directory argument, e.g. `gala build ./cmd/app`) also
+// synthesizes a consumer main, so it is keyed by the directory it came from.
+//
+// The path is made relative to the project root so the key does not change when
+// the same project is built from a different absolute location.
+func (b *Builder) treeShape() string {
+	if b.sourceDir == "" || b.sourceDir == b.workspace.ProjectDir {
+		return ""
+	}
+	rel, err := filepath.Rel(b.workspace.ProjectDir, b.sourceDir)
+	if err != nil {
+		return b.sourceDir // outside the project: distinct, which is all the key needs
+	}
+	return filepath.ToSlash(rel)
+}
+
 // computeSourceHash computes a SHA256 hash of all inputs for cache invalidation.
 // Includes .gala source files, gala.mod, the gala version, and the fingerprint
 // of the standard library the sources are compiled against, so that any change
@@ -452,10 +470,20 @@ func (b *Builder) ensureStdlib() error {
 // against the previous stdlib — so repairing the stdlib would leave every
 // project that had been built before the repair silently unchecked until one of
 // its own files happened to change.
-func computeSourceHash(files []string, galaVersion, stdlibFingerprint string) string {
+//
+// `shape` names the LAYOUT the transpile produces in gen/, not just its inputs.
+// One set of sources can be generated two ways — `gala build` puts the library
+// at the gen root, `gala build ./cmd/app` additionally synthesizes a consumer
+// main under gen/cmd/main — and the hash has to tell those apart. Keyed on file
+// contents alone the two are identical, so a plain build following a
+// subdirectory build found a matching hash over a non-empty gen/, skipped
+// transpilation, and compiled the consumer tree the previous command left
+// behind. See treeShape.
+func computeSourceHash(files []string, galaVersion, stdlibFingerprint, shape string) string {
 	h := sha256.New()
 	h.Write([]byte("gala:" + galaVersion + "\n"))
 	h.Write([]byte("stdlib:" + stdlibFingerprint + "\n"))
+	h.Write([]byte("shape:" + shape + "\n"))
 	sorted := make([]string, len(files))
 	copy(sorted, files)
 	sort.Strings(sorted)
@@ -523,7 +551,7 @@ func (b *Builder) transpile() error {
 	// Include gala.mod in hash so dep changes also invalidate the cache
 	hashFile := filepath.Join(b.workspace.Dir, ".gala-source-hash")
 	galaModFile := filepath.Join(b.workspace.ProjectDir, "gala.mod")
-	currentHash := computeSourceHash(append(galaFiles, galaModFile), b.stdlibVersion, stdlib.Fingerprint())
+	currentHash := computeSourceHash(append(galaFiles, galaModFile), b.stdlibVersion, stdlib.Fingerprint(), b.treeShape())
 	if currentHash != "" {
 		if oldHash, err := os.ReadFile(hashFile); err == nil && string(oldHash) == currentHash {
 			if genFiles, err := b.workspace.GenFiles(); err == nil && len(genFiles) > 0 {
@@ -829,7 +857,33 @@ func (b *Builder) transpileWithSourceDir() error {
 		return fmt.Errorf("rewriting library imports: %w", err)
 	}
 
+	// Record what is now in gen/. This path does not consult the hash — it always
+	// re-transpiles — but it must not leave behind a key describing a tree it just
+	// replaced. Without this, the plain build that ran before this one still owns
+	// the file, and the plain build that runs after it matches that key over a
+	// non-empty gen/ and compiles the consumer tree written here.
+	b.recordSourceHash()
+
 	return nil
+}
+
+// recordSourceHash stores the cache key for the tree now in gen/. A key that
+// cannot be computed (an unreadable source) is simply not written, which makes
+// the next build re-transpile — the safe direction.
+func (b *Builder) recordSourceHash() {
+	// findGalaFilesRecursive, not findGalaFiles: the key has to be computed over
+	// the same inputs transpile() uses, or the two paths write keys that can
+	// never compare equal and the cache silently stops working.
+	galaFiles, err := findGalaFilesRecursive(b.workspace.ProjectDir)
+	if err != nil {
+		return
+	}
+	galaModFile := filepath.Join(b.workspace.ProjectDir, "gala.mod")
+	hash := computeSourceHash(append(galaFiles, galaModFile), b.stdlibVersion, stdlib.Fingerprint(), b.treeShape())
+	if hash == "" {
+		return
+	}
+	os.WriteFile(filepath.Join(b.workspace.Dir, ".gala-source-hash"), []byte(hash), 0644)
 }
 
 // extractEmbedPatterns parses //go:embed directives from generated Go code
