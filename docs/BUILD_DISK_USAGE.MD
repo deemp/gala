@@ -48,8 +48,13 @@ explicitly; from 9.x it is on by default. We pin 9.2.0 and rely on the default.
 
 This requires [Bazelisk](https://github.com/bazelbuild/bazelisk), which reads
 `.bazelversion`. A directly installed `bazel` binary ignores the file and keeps
-whatever version it happens to be, so check `bazel --version` if you are not
-seeing the benefit.
+whatever version it happens to be, so check `bazel --version`.
+
+Running a directly installed **Bazel 8** against this repo does more than miss
+the benefit: `MODULE.bazel.lock` is lockFileVersion 28, which Bazel 8 cannot
+read, so it discards the lock and — under the default `--lockfile_mode=update`
+— rewrites it back to version 16. The file then flip-flops depending on who
+built last, and nothing in CI catches it.
 
 To confirm the cache is actually being used, look for a `contents/` directory
 next to the download cache after a fetch:

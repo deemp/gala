@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#
 # Report (and optionally reclaim) disk used by Bazel output bases.
 #
 # Bazel keys its output base on the *path* of the workspace, so every git
@@ -17,11 +18,13 @@
 #
 # Set BAZEL_OUTPUT_USER_ROOT to point at a non-default Bazel root, e.g. when
 # you build with an explicit --output_user_root.
+#
+### end usage
 
 set -euo pipefail
 
 usage() {
-  sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,/^### end usage/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'
 }
 
 prune=0
@@ -29,7 +32,7 @@ assume_yes=0
 for arg in "$@"; do
   case "$arg" in
     --prune) prune=1 ;;
-    --yes|-y) assume_yes=1 ;;
+    --yes|-y) assume_yes=1; prune=1 ;;   # "clean up without asking" implies --prune
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; usage >&2; exit 2 ;;
   esac
@@ -39,13 +42,21 @@ done
 # out to `bazel info output_base` to discover this: inside a workspace that
 # starts a server and does full module resolution just to print a disk report,
 # and it gives the wrong answer entirely when --output_base is overridden.
+# $HOME/$USERPROFILE rather than a hardcoded C:/Users/<name> so a relocated or
+# redirected Windows profile still resolves.
 root="${BAZEL_OUTPUT_USER_ROOT:-}"
 if [ -z "$root" ]; then
   user="${USERNAME:-${USER:-$(id -un)}}"
   case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*) root="/c/Users/$user/_bazel_$user" ;;
-    Darwin)               root="/private/var/tmp/_bazel_$user" ;;
-    *)                    root="${HOME}/.cache/bazel/_bazel_$user" ;;
+    MINGW*|MSYS*|CYGWIN*)
+      home="${HOME:-}"
+      if [ -z "$home" ] && [ -n "${USERPROFILE:-}" ]; then
+        home="$(cygpath -u "$USERPROFILE" 2>/dev/null || printf '%s' "$USERPROFILE")"
+      fi
+      root="${home}/_bazel_$user"
+      ;;
+    Darwin) root="/private/var/tmp/_bazel_$user" ;;
+    *)      root="${HOME}/.cache/bazel/_bazel_$user" ;;
   esac
 fi
 
@@ -114,6 +125,22 @@ printf 'total:    %6d MB (%.1f GB) in output bases\n' \
 printf 'orphaned: %6d MB (%.1f GB) in %d output bases\n' \
   "$orphan_total" "$(echo "$orphan_total" | awk '{print $1/1024}')" "${#orphans[@]}"
 
+# The shared caches sit next to the output bases and are excluded from the walk
+# above, but they are part of Bazel's real footprint — and the repo contents
+# cache in particular grows as it does its job. Report it so `total` is not read
+# as the whole story. Bazel trims it itself
+# (--repo_contents_cache_gc_max_age, 14d by default).
+contents_cache="$root/cache/repos/v1/contents"
+if [ -d "$contents_cache" ]; then
+  cache_mb="$(du -sm "$contents_cache" 2>/dev/null | cut -f1 || true)"
+  printf 'shared:   %6d MB (%.1f GB) in the repo contents cache (not reclaimed here)\n' \
+    "${cache_mb:-0}" "$(echo "${cache_mb:-0}" | awk '{print $1/1024}')"
+  echo
+  echo "note: extracted external repos are hard links into that shared cache, so"
+  echo "      per-base sizes count them once each and the orphaned figure"
+  echo "      overstates what deleting actually frees."
+fi
+
 if [ "${#orphans[@]}" -eq 0 ]; then
   exit 0
 fi
@@ -131,7 +158,11 @@ if [ "$assume_yes" -eq 0 ]; then
   echo
   printf 'delete %d orphaned output base(s), %d MB? [y/N] ' \
     "${#orphans[@]}" "$orphan_total"
-  read -r reply </dev/tty || reply=""
+  if ! read -r reply </dev/tty 2>/dev/null; then
+    echo >&2
+    echo "cannot prompt for confirmation (no terminal); re-run with --yes" >&2
+    exit 3
+  fi
   case "$reply" in
     y|Y|yes|YES) ;;
     *) echo "aborted"; exit 0 ;;
@@ -147,7 +178,17 @@ for base in "${orphans[@]}"; do
   # own files open, which is exactly the orphan case. Ask it to exit first, and
   # never let one stuck base abandon the rest.
   bazel --output_base="$base" shutdown >/dev/null 2>&1 || true
-  if ! rm -rf "$base" 2>/dev/null; then
+
+  # Delete the contents first and DO_NOT_BUILD_HERE last. rm -rf walks in
+  # readdir order, so a single locked file part-way through would otherwise
+  # leave a multi-gigabyte remnant whose marker is already gone — and a
+  # marker-less base reads as "unknown", which --prune never touches again.
+  find "$base" -mindepth 1 -maxdepth 1 \
+    ! -name DO_NOT_BUILD_HERE -exec rm -rf {} + 2>/dev/null || true
+  rm -f "$base/DO_NOT_BUILD_HERE" 2>/dev/null || true
+  rmdir "$base" 2>/dev/null || true
+
+  if [ -d "$base" ]; then
     echo "  could not fully remove $name (server still running?)" >&2
     failed=$((failed + 1))
   fi
