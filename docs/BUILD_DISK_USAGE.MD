@@ -13,10 +13,11 @@ worktrees is tens of gigabytes of dead cache.
 
 Two further multipliers apply *inside* each output base:
 
-- **Extracted external repositories.** The pinned Go SDK unpacks to ~207 MB.
-  Before Bazel 9 that extraction happened once per output base.
-  `--repository_cache` only cached the *downloaded archive*, not the unpacked
-  result.
+- **Extracted external repositories.** The pinned Go SDK unpacks to ~207 MB,
+  once per output base. Bazel has no mechanism today for sharing extracted
+  repositories between output bases — `--repository_cache` caches the
+  *downloaded archive*, and the repo contents cache does not help either (see
+  below).
 - **Compiled output.** GALA's generated Go instantiates a large number of Go
   generics, so intermediate `.a` archives are much bigger than the source they
   came from — often by two orders of magnitude. The linker discards almost all
@@ -26,43 +27,51 @@ Two further multipliers apply *inside* each output base:
 
 ### A pinned Bazel 9.2.0
 
-`//.bazelversion` pins Bazel 9.2.0, for the **repo contents cache**: a store of
-*extracted* repository directories shared across workspaces, so a pinned
-toolchain is unpacked once per version for the whole machine rather than once
-per output base.
+`//.bazelversion` pins Bazel 9.2.0. The reason is **reproducibility, not disk**.
 
-The version matters more than it looks. The flag was added in Bazel 8.3, but
-there it defaults to the empty string — and an empty string means *disabled*:
+There is no `.bazelversion` drift: without a pin, Bazelisk resolves whatever is
+latest, so the version CI builds with changes under you. And `MODULE.bazel.lock`
+is lockFileVersion 28, which Bazel 8 cannot read — a directly installed Bazel 8
+discards the lock and, under the default `--lockfile_mode=update`, **rewrites it
+back to version 16**, so the file flip-flops depending on who built last and
+nothing in CI catches it.
 
-```
-bazel 8.8.0:  --repo_contents_cache (a path; default: "")
-              "An empty string as argument requests the repo contents cache to
-               be disabled."
-
-bazel 9.2.0:  --repo_contents_cache (a path; default: see description)
-              "... otherwise the default of `{--repository_cache}/contents`"
-```
-
-So on 8.x you get the cache only if you pass `--repo_contents_cache=<path>`
-explicitly; from 9.x it is on by default. We pin 9.2.0 and rely on the default.
-
-This requires [Bazelisk](https://github.com/bazelbuild/bazelisk), which reads
-`.bazelversion`. A directly installed `bazel` binary ignores the file and keeps
+The pin requires [Bazelisk](https://github.com/bazelbuild/bazelisk), which reads
+`.bazelversion`. A directly installed `bazel` ignores the file and keeps
 whatever version it happens to be, so check `bazel --version`.
 
-Running a directly installed **Bazel 8** against this repo does more than miss
-the benefit: `MODULE.bazel.lock` is lockFileVersion 28, which Bazel 8 cannot
-read, so it discards the lock and — under the default `--lockfile_mode=update`
-— rewrites it back to version 16. The file then flip-flops depending on who
-built last, and nothing in CI catches it.
+#### The repo contents cache does not save disk — measured
 
-To confirm the cache is actually being used, look for a `contents/` directory
-next to the download cache after a fetch:
+Bazel 9 enables a **repo contents cache** by default at
+`{--repository_cache}/contents`, described as holding fetched repo directories
+"shareable across workspaces". That phrasing is easy to misread, so to be
+explicit: it means the *fetch result* is reusable, **not** that bytes are shared
+on disk.
 
-```shell
-ls "$(bazel info output_base)/../cache/repos/v1/"
-# content_addressable  contents
+Measured — two identical scratch workspaces, same Bazel 9.2.0, `fetch --all` in
+each:
+
+| | |
+|---|---|
+| wsA `external/` | 8,250 MB (cold fetch, 390 s) |
+| wsB `external/` | 8,251 MB (warm fetch, 162 s — 2.4× faster) |
+| files hardlinked between them | **0** |
+| the contents cache itself | **7,498 MB — a third full copy** |
+
+The second workspace got its own complete copy and the cache *added* 7.5 GB on
+top, so the net effect on disk is **worse**. Bazel issue
+[#27913](https://github.com/bazelbuild/bazel/issues/27913), asking for exactly
+this cross-output-base storage sharing, is still open.
+
+If disk matters more than fetch time on your machine, the cache is something to
+turn **off**, in `.bazelrc.user`:
+
 ```
+common --repo_contents_cache=
+```
+
+(An empty value disables it. For the same reason, the flag being present from
+Bazel 8.3 was never useful either — there it defaults to empty already.)
 
 ### `tools/bazel_gc.sh`
 
@@ -137,5 +146,7 @@ every test fails with "The system cannot find the path specified".
   re-creates the base when a different workspace claims it, so every switch
   becomes a full rebuild.
 - **`--noenable_runfiles`** on Windows, as above.
-- **`--repository_cache` alone** for the extraction cost. It caches downloads,
-  not unpacked directories. That is what the repo contents cache adds.
+- **Sharing extracted external repos between output bases.** Bazel has no
+  mechanism for it. `--repository_cache` caches downloads, not unpacked
+  directories, and the repo contents cache is a fetch-time optimisation that
+  costs disk rather than saving it (measured above).

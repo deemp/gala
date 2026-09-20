@@ -39,13 +39,11 @@ build --worker_quit_after_build
 # nothing reclaims it when the worktree goes away. Two things keep that in
 # check:
 #
-#   * The repo contents cache, which holds *extracted* external repositories
-#     shared across workspaces, so a pinned toolchain is unpacked once per
-#     version for the whole machine instead of once per output base. It is on
-#     by default at {--repository_cache}/contents from Bazel 9 onwards (8.3
-#     added the flag but defaults it to "", which means disabled) —
-#     hence the exact pin in //.bazelversion (Bazelisk pins, it does not floor).
-#     Without it the Go SDK alone cost ~207 MB in every output base.
+#   * The exact pin in //.bazelversion, which keeps the Bazel version from
+#     drifting with whatever Bazelisk considers latest and keeps a stray
+#     Bazel 8 from rewriting MODULE.bazel.lock (v28) back to v16. That is a
+#     reproducibility measure, not a disk one — Bazel 9's repo contents cache
+#     is a fetch-time optimisation that costs disk rather than saving it.
 #   * tools/bazel_gc.sh, which reports every output base with its size and
 #     owning workspace and prunes the ones whose workspace is gone.
 #
