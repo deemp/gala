@@ -45,6 +45,7 @@ go_test(
         "main_package_test.go",
         "transpile_batch_static_test.go",
         "transpile_perf_test.go",
+        "tree_shape_cache_test.go",
         "workspace_isolation_test.go",
     ],
     data = [
