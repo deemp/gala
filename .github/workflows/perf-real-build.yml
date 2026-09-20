@@ -72,12 +72,24 @@ jobs:
     # paying for a worker forever.
     timeout-minutes: 30
 
-    # NOTE: pin tags before running. Update both when the gala_tui
-    # or gala_team API surface intentionally changes; otherwise the
-    # build failures will reveal real semantic drift.
+    # Both refs are PINNED. This lane exists to measure what a change to gala
+    # does to a real downstream build, which only means something if the
+    # downstream side holds still: tracking a moving branch made every run
+    # measure two variables at once, and any breakage in the dependency landed
+    # on whichever gala PR happened to run next.
+    #
+    # That is not hypothetical. A source file added to gala_tui without
+    # re-running gazelle left it out of BUILD.bazel, so `main` stopped
+    # transpiling; the failure surfaced here, on unrelated PRs, and not in
+    # gala_tui's own CI, which runs `gala test` and never builds with bazel.
+    #
+    # Update these deliberately, when the gala_tui or gala_team API surface
+    # intentionally changes — a red run after a bump is then real semantic
+    # drift, attributable to the bump. gala_tui has no tag past its GALA 0.79
+    # migration, so it is pinned by commit until one is cut.
     env:
-      GALA_TUI_REF: main
-      GALA_TEAM_REF: master
+      GALA_TUI_REF: cd234574bdd942e789c93c6c91048b10c2517aa2
+      GALA_TEAM_REF: "0.12.0"
       WARM_BUDGET_SECONDS: "500"
       COLD_BUDGET_SECONDS: "850"
 
