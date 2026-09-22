@@ -26,7 +26,59 @@
   ),
   # `source` rather than `src`: callPackage would otherwise hand us
   # pkgs.src, which nixpkgs defines as a throw.
-  source ? lib.cleanSource ../.,
+  source ? lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions (
+      [
+        # Module metadata. gala.mod is also the file `version` above is
+        # read from, and the transpiler's module resolver looks it up
+        # relative to the search path.
+        ../gala.mod
+        ../go.mod
+        ../go.sum
+
+        # Everything `go build ./cmd/...` compiles, plus the Bazel
+        # metadata and ANTLR grammar the preBuild pipeline reads.
+        ../cmd
+        ../internal
+        ../galaerr
+        ../docs/errors # errdocs.go embeds GALA-E*.md
+      ]
+      # Stdlib packages referenced by internal/stdlib/BUILD.bazel's
+      # generate_embedded genrule: transpiled .gala sources, .gala files
+      # embedded verbatim, and hand-written .go helpers.
+      ++ map (pkg: ../. + "/${pkg}") [
+        "collection_immutable"
+        "collection_mutable"
+        "concurrent"
+        "crypto"
+        "fs"
+        "go_builtins"
+        "go_interop"
+        "io"
+        "json"
+        "lazy"
+        "path"
+        "regex"
+        "resource"
+        "std"
+        "stream"
+        "strings"
+        "subprocess"
+        "test"
+        "time_utils"
+        "validation"
+        "yaml"
+      ]
+      # `go mod vendor` scans every main-module package, including these
+      # Go test fixtures; dropping them would change the vendor tree and
+      # so break vendorHash.
+      ++ map (dir: lib.fileset.fileFilter (file: file.hasExt "go") (../. + "/${dir}")) [
+        "bazel_test_fixtures"
+        "examples"
+      ]
+    );
+  },
 }:
 
 buildGoModule (finalAttrs: {
