@@ -156,3 +156,6 @@ bazel_test_fixtures/**/*.gen.go
 # Nix build/dev-shell outputs (`nix build`, `nix develop` result symlinks).
 /result
 /result-*
+
+# directory used by direnv
+.direnv
