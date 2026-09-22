@@ -149,6 +149,8 @@ buildGoModule (finalAttrs: {
     echo "gala: collected $(wc -l < "$embeddedSrcs") embed inputs"
 
     mkdir -p "$TMPDIR/transpiled"
+    batchInputs=()
+    batchOutputs=()
     files=()
     while IFS= read -r label; do
       pkg="''${label#//}"
@@ -170,13 +172,9 @@ buildGoModule (finalAttrs: {
           if [ -z "$srcfile" ]; then
             srcfile="$stem.gala"
           fi
-          echo "gala: transpiling $pkg/$srcfile -> $pkg/$stem.gen.go"
           mkdir -p "$TMPDIR/transpiled/$pkg"
-          "$TMPDIR/gala_bootstrap" \
-            --input "$pkg/$srcfile" \
-            --output "$TMPDIR/transpiled/$pkg/$stem.gen.go" \
-            --search "$PWD" \
-            --goroot="$(go env GOROOT)"
+          batchInputs+=("$pkg/$srcfile")
+          batchOutputs+=("$TMPDIR/transpiled/$pkg/$stem.gen.go")
           files+=("$TMPDIR/transpiled/$pkg/$stem.gen.go")
           ;;
         *)
@@ -185,6 +183,19 @@ buildGoModule (finalAttrs: {
           ;;
       esac
     done < "$embeddedSrcs"
+
+    # One process for every transpile: the expensive transitive type graph
+    # (std, collection_immutable, ...) is built once and reused across files
+    # instead of once per `gala_bootstrap` fork. Siblings are derived per
+    # directory inside the tool, matching the Bazel worker's batch shape.
+    batchInputsJoined=$(IFS=,; echo "''${batchInputs[*]}")
+    batchOutputsJoined=$(IFS=,; echo "''${batchOutputs[*]}")
+    echo "gala: transpiling ''${#batchInputs[@]} .gala files in one batch"
+    "$TMPDIR/gala_bootstrap" \
+      --inputs "$batchInputsJoined" \
+      --outputs "$batchOutputsJoined" \
+      --search "$PWD" \
+      --goroot="$(go env GOROOT)"
     echo "gala: transpiled $(ls "$TMPDIR"/transpiled/*/*.gen.go 2>/dev/null | wc -l) .gala files"
 
     # 4. internal/stdlib/embedded_gen.go.
