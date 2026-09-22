@@ -8,6 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"martianoff/gala/internal/transpiler"
 )
 
@@ -388,4 +391,36 @@ func TestLoadPackageDocIgnoresTestFiles(t *testing.T) {
 	if pkg.Types[0].Doc != "Box holds a size." {
 		t.Errorf("Box.Doc = %q", pkg.Types[0].Doc)
 	}
+}
+
+// TestDocPackageLookupHelpers covers the presentation-side helpers `gala doc`
+// keeps for itself. Resolving a fully-qualified import path is the resolver's
+// job and is tested in //internal/transpiler/module.
+func TestDocPackageLookupHelpers(t *testing.T) {
+	root := t.TempDir()
+	pkg := filepath.Join(root, "test")
+	require.NoError(t, os.MkdirAll(pkg, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(pkg, "a.gala"),
+		[]byte("package test\n\nfunc F() int = 1\n"), 0644))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "empty"), 0755))
+
+	paths := []string{root}
+
+	t.Run("dirHasGalaFiles", func(t *testing.T) {
+		assert.True(t, dirHasGalaFiles(pkg))
+		assert.False(t, dirHasGalaFiles(filepath.Join(root, "empty")))
+		assert.False(t, dirHasGalaFiles(filepath.Join(root, "nosuch")))
+	})
+
+	t.Run("locatePackageByName", func(t *testing.T) {
+		assert.Equal(t, pkg, locatePackageByName(paths, "test"))
+		assert.Empty(t, locatePackageByName(paths, "nosuch"))
+		assert.Empty(t, locatePackageByName(paths, ""))
+	})
+
+	t.Run("packageShortName", func(t *testing.T) {
+		assert.Equal(t, "test", packageShortName("martianoff/gala/test"))
+		assert.Equal(t, "test", packageShortName("test"))
+		assert.Equal(t, "widgets", packageShortName("example.com/toolkit/widgets"))
+	})
 }

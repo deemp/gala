@@ -204,6 +204,9 @@ type fileImport struct {
 	// IsDot marks the `import . "…"` form, which brings the package's exports
 	// into scope unqualified.
 	IsDot bool
+	// Tok is the spec's first token, so a diagnostic can point at this import
+	// rather than at the file.
+	Tok antlr.Token
 }
 
 // LocalName is how the package is referred to in source: its alias when one was
@@ -232,7 +235,7 @@ func scanFileImports(sf *grammar.SourceFileContext) []fileImport {
 			if !ok || s.STRING() == nil {
 				continue
 			}
-			fi := fileImport{Path: strings.Trim(s.STRING().GetText(), "\"")}
+			fi := fileImport{Path: strings.Trim(s.STRING().GetText(), "\""), Tok: s.GetStart()}
 			if alias := s.Identifier(); alias != nil {
 				fi.Alias = alias.GetText()
 			} else {
@@ -323,6 +326,15 @@ func (a *galaAnalyzer) checkUndefinedSymbols(
 	}
 	c.walker = scopewalk.New(c, undefWalkOptions())
 	c.walkSourceFile(sourceFile)
+
+	// Type positions are invisible to the value walker, so they get their own
+	// pass over the same qualifier set. Sharing the checker shares its
+	// `reported` map too, so a qualifier missing in both a value and a type
+	// position is reported once rather than twice — each report walks every
+	// search root to build its hint, so the dedupe is worth real work. It runs
+	// under this function's eligibility guards, which is why it lives here
+	// rather than standing alone. See checkTypeQualifiers.
+	c.checkTypeQualifiers(sourceFile)
 
 	sort.SliceStable(c.errs, func(i, j int) bool {
 		if c.errs[i].Line != c.errs[j].Line {
@@ -1268,4 +1280,66 @@ func packageClauseOf(src string) string {
 		}
 	}
 	return ""
+}
+
+// --- type-position qualifiers ------------------------------------------------
+
+// checkTypeQualifiers reports a package qualifier used in TYPE position that no
+// import brings into scope, so `var sb strings.Builder` in a file that never
+// imports `strings` is a GALA diagnostic rather than a Go one.
+//
+// The shared scope walker is a VALUE-reference walker: it short-circuits
+// TypeContext by design, because a type name is not a value and leaking one
+// into the reference stream would break the capture analysis built on the same
+// walker. That left type positions unchecked. The call half of
+//
+//	var sb strings.Builder                 // unreported
+//	sb.WriteString(strings.Repeat("-", n)) // GALA-E0023
+//
+// was caught and the type half was not; a file whose ONLY offending use was a
+// type position got no GALA error at all and fell through to `go build`.
+//
+// It is a method rather than a free function so it shares the caller's
+// qualifier set, error slice and `reported` map; an earlier revision built a
+// second checker and reported a doubly-missing qualifier twice.
+//
+// Only the QUALIFIER is checked, never the member. `strings.Builder` asks
+// whether `strings` is in scope, not whether it exports `Builder` — the
+// qualifier is unambiguously a package name, while resolving the member would
+// need the full type surface of every imported Go package and would misfire
+// whenever that surface is incomplete (no Go SDK, an unanalyzed package).
+// Unqualified type names are left alone entirely: a bare `Foo` may be a type
+// parameter, a local declaration, or a dot-imported name.
+func (c *undefChecker) checkTypeQualifiers(sourceFile *grammar.SourceFileContext) {
+	walkTypeContexts(sourceFile, func(tc *grammar.TypeContext) {
+		qi := tc.QualifiedIdentifier()
+		if qi == nil {
+			return
+		}
+		ids := qi.(*grammar.QualifiedIdentifierContext).AllIdentifier()
+		if len(ids) < 2 {
+			return // unqualified: not a package reference
+		}
+		name := ids[0].GetText()
+		if c.qualifiers[name] {
+			return
+		}
+		c.report(name, ids[0].GetStart())
+	})
+}
+
+// walkTypeContexts visits every TypeContext in the tree, including the nested
+// ones a composite type holds — `map[string]strings.Builder` and `[]pkg.T` both
+// carry their qualified type below an outer TypeContext.
+func walkTypeContexts(node antlr.Tree, visit func(*grammar.TypeContext)) {
+	if tc, ok := node.(*grammar.TypeContext); ok {
+		visit(tc)
+	}
+	for i := 0; i < node.GetChildCount(); i++ {
+		// Only a parser rule can contain a TypeContext; descending into
+		// terminals would pay a type assertion per token for nothing.
+		if child, ok := node.GetChild(i).(antlr.ParserRuleContext); ok {
+			walkTypeContexts(child, visit)
+		}
+	}
 }

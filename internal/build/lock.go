@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,7 +52,13 @@ const (
 	// to release the workspace before giving up. Generous enough to cover a
 	// cold build of a large project, short enough that a genuinely wedged
 	// workspace is reported rather than waited on forever.
+	//
+	// GALA_BUILD_LOCK_TIMEOUT overrides it — see lockTimeout.
 	workspaceLockTimeout = 10 * time.Minute
+
+	// lockTimeoutEnv overrides workspaceLockTimeout. It takes a Go duration
+	// ("30s", "2m") or "0" to wait forever.
+	lockTimeoutEnv = "GALA_BUILD_LOCK_TIMEOUT"
 
 	// cleanLockTimeout is how long `gala clean` waits for a workspace before
 	// leaving it alone. Much shorter than a build's wait: someone who typed a
@@ -79,20 +86,69 @@ type lockHandle struct {
 	done     bool
 }
 
+// lockTimeout returns the wait a build should use, honouring
+// GALA_BUILD_LOCK_TIMEOUT when it is set to a valid duration.
+//
+// A scripted or CI run wants to fail rather than block: there is no one to
+// notice the wait, and a job that sits for the default ten minutes behind a
+// stray process burns the runner for nothing. Setting the variable to a few
+// seconds turns that into a prompt, legible failure. "0" waits forever, for
+// the opposite case — a queue that would rather be slow than flaky.
+//
+// An unparseable value falls back to the default rather than failing the
+// build: the variable is an optimisation, and a typo in it should not stop a
+// build that would otherwise work.
+func lockTimeout(def time.Duration) time.Duration {
+	raw := os.Getenv(lockTimeoutEnv)
+	if raw == "" {
+		return def
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		// Bare seconds are the shape people reach for first.
+		if n, nerr := strconv.Atoi(raw); nerr == nil {
+			d, err = time.Duration(n)*time.Second, nil
+		}
+	}
+	if err != nil || d < 0 {
+		fmt.Fprintf(os.Stderr, "gala: ignoring %s=%q (not a duration such as \"30s\")\n", lockTimeoutEnv, raw)
+		return def
+	}
+	return d
+}
+
+// lockNotice is what a caller says while it waits, because only the caller
+// knows what the lock it is taking protects.
+//
+// `what` names the thing in "waiting for the <what> lock"; an empty `what`
+// means say nothing at all, which is what a `gala clean` sweep wants — it
+// skips a held workspace by design, so a notice there would be an alarming
+// report of a non-event. `hint` is the "how to proceed" line, omitted when
+// there is no useful advice: the stdlib cache is shared by every project on
+// the machine, so telling the user to set --build-dir cannot help there.
+type lockNotice struct {
+	what string
+	hint string
+}
+
+// workspaceNotice is the wording for the per-project build/test workspace, the
+// only one of these locks a user can resolve by moving their build elsewhere.
+var workspaceNotice = lockNotice{what: "build workspace", hint: buildDirHint}
+
 // Lock takes the workspace's exclusive lock, waiting up to timeout for a
 // concurrent holder to finish. A zero timeout waits forever.
 //
 // The lock is advisory and cooperative — it exists to serialize this tool
 // against itself, not to defend the directory from arbitrary writers.
 func (w *Workspace) Lock(timeout time.Duration) (*lockHandle, error) {
-	return lockDir(w.Dir, timeout)
+	return lockDir(w.Dir, timeout, workspaceNotice)
 }
 
 // lockDir is Lock over a bare directory path. `gala clean` sweeps workspaces it
 // finds on disk rather than ones it constructed, so it has a directory and no
 // Workspace — and deleting a workspace needs the lock just as much as building
 // one does.
-func lockDir(dir string, timeout time.Duration) (*lockHandle, error) {
+func lockDir(dir string, timeout time.Duration, notice lockNotice) (*lockHandle, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("creating workspace dir: %w", err)
 	}
@@ -103,24 +159,54 @@ func lockDir(dir string, timeout time.Duration) (*lockHandle, error) {
 		deadline = time.Now().Add(timeout)
 	}
 
+	var waitStart time.Time // zero until the first blocked attempt
+	waited := func() time.Duration {
+		if waitStart.IsZero() {
+			return 0
+		}
+		// Whole seconds; the sub-millisecond tail is noise for a human.
+		return time.Since(waitStart).Round(time.Second)
+	}
+
 	for {
 		h, err := tryLock(path)
 		if err == nil {
+			if !waitStart.IsZero() && notice.what != "" {
+				fmt.Fprintf(os.Stderr, "gala: %s lock acquired after %s\n", notice.what, waited())
+			}
 			return h, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
-			return nil, fmt.Errorf("locking build workspace: %w", err)
+			return nil, fmt.Errorf("locking %s: %w", dir, err)
 		}
 
 		if breakIfStale(path) {
 			continue // the holder is gone; the next attempt takes it
 		}
 
+		// Say what the wait is for, once, the first time round. Without this
+		// the process produces no output at all while it blocks, and the first
+		// reading of a command that sits for minutes is that it has hung — the
+		// wait is invisible, so it gets attributed to the slowest thing the
+		// command was known to be doing.
+		if waitStart.IsZero() {
+			waitStart = time.Now()
+			if notice.what != "" {
+				fmt.Fprintf(os.Stderr, "gala: waiting for the %s lock (%s)\n", notice.what, holderDescription(path))
+				if notice.hint != "" {
+					fmt.Fprintf(os.Stderr, "gala: %s\n", notice.hint)
+				}
+			}
+		}
+
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			return nil, fmt.Errorf(
-				"%w: %s\nheld by: %s\n"+
-					"Another gala process is building this project. Wait for it to finish, or\n%s",
-				ErrLockBusy, dir, holderDescription(path), buildDirHint)
+			err := fmt.Errorf("%w: %s\nheld by: %s\nwaited: %s",
+				ErrLockBusy, dir, holderDescription(path), waited())
+			if notice.hint != "" {
+				err = fmt.Errorf("%w\nAnother gala process is using this. Wait for it to finish, or\n%s",
+					err, notice.hint)
+			}
+			return nil, err
 		}
 
 		time.Sleep(lockPoll)
