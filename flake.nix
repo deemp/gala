@@ -1,6 +1,11 @@
 # GALA flake.
 #
-#   * packages.<system>.gala / .default - the gala CLI, built from source
+#   * packages.<system>.gala / .default - the gala CLI, built from source;
+#     the stdlib is transpiled by a downloaded release binary (see
+#     nix/gala.nix)
+#   * packages.<system>.gala-local        - escape hatch for grammar or
+#     codegen work the release cannot handle yet: transpiles with
+#     cmd/gala_bootstrap built from this tree
 #   * overlays.default                   - adds pkgs.gala to nixpkgs
 #   * devShells.default                  - Bazelisk, Go, JDK for this repo
 #   * checks.<system>.smoke              - offline build-and-run smoke test
@@ -30,6 +35,7 @@
       packages = eachSystem (
         system: pkgs: {
           gala = pkgs.callPackage ./nix/gala.nix { };
+          gala-local = pkgs.callPackage ./nix/gala.nix { useLocalBootstrap = true; };
           default = self.packages.${system}.gala;
         }
       );

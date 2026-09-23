@@ -1,44 +1,55 @@
-# GALA, built from source with a pinned stage-0 compiler.
+# GALA, built from source.
 #
-# Compiling the stdlib needs a working GALA transpiler, but building that
-# transpiler from the working tree would recreate the dependency cycle. So the
-# build splits into two stages:
+# The stdlib is written in GALA, so compiling it needs a working GALA
+# transpiler. The full CLI embeds the stdlib it would have to transpile, so it
+# cannot produce that stdlib itself; instead the stdlib is transpiled by a
+# downloaded release binary (`releaseGalaBin`). `cmd/gala_bootstrap` does not
+# import `internal/stdlib`, so it can be built from this tree and serves as the
+# `useLocalBootstrap` escape hatch.
 #
-#   Stage A (inputs from the pinned revision in MODULE.bazel; rebuilds only
-#   when the pin is bumped)
-#     pinnedAntlr      gala.g4 -> internal/parser/grammar/*.go
-#     pinnedBootstrap  cmd/gala_bootstrap + cmd/stdlib_gen
-#     pinnedStdlib     pinned bootstrap transpiles the pinned stdlib
-#     pinnedGala       cmd/gala with the pinned stdlib embedded; exports GOCACHE
-#
-#   Stage B (local tree)
-#     localAntlr      gala.g4 -> internal/parser/grammar/*.go
-#     localTranspiled the pinned bootstrap transpiles the local stdlib
-#     gala            cmd/gala with the local stdlib embedded; packs it with
-#                     cmd/stdlib_gen built from local Go; GOCACHE seeded from
-#                     pinnedGala so unchanged Go packages compile once
+#   localAntlr       gala.g4 -> internal/parser/grammar/*.go
+#   localTranspiled  releaseGalaBin transpiles the local stdlib, one
+#                    `transpile-package` invocation per package (every
+#                    non-test .gala file as that package's input list, which
+#                    is directory-scan semantics)
+#   gala             cmd/gala built from the local Go sources, with the local
+#                    grammar overlaid and the stdlib packed in by
+#                    cmd/stdlib_gen built from those same sources
 #
 # Incrementality:
 #   edit Go under internal/ or cmd/   -> gala rebuilds
 #   edit a stdlib .gala file          -> localTranspiled + gala
 #   edit gala.g4                      -> localAntlr + gala
-#   bump the pin                      -> Stage A once, then localTranspiled + gala
+#   bump galaReleaseVersion           -> releaseGalaBin + localTranspiled + gala
+#
+# `useLocalBootstrap = true` (packaged as `.#gala-local`) replaces the release
+# binary with `cmd/gala_bootstrap` built from this tree, for grammar or codegen
+# work the release cannot handle yet. The trade: any Go edit then rebuilds the
+# bootstrap and retranspiles the stdlib.
 {
   lib,
   buildGoModule,
-  fetchFromGitHub,
   fetchurl,
   go,
   jdk21,
   stdenv,
-  # Escape hatch for grammar work the pinned compiler cannot parse: build the
-  # bootstrap from the working tree instead of the pin.
+  # Escape hatch: transpile the stdlib with cmd/gala_bootstrap built from this
+  # tree instead of a downloaded release binary.
   useLocalBootstrap ? false,
-  # Vendor hashes. Defaults are the current master go.mod's hash; if the
-  # pinned revision's go.mod differs, run `nix build` once and copy the
-  # suggested hash. Keep them separate so a stale pin fails loudly.
+  # Downloaded release binary used to transpile the stdlib. Bump the version
+  # and all four hashes together; the asset names match .github/workflows/
+  # release.yml. A release can lag the tree (codegen/grammar changes), in
+  # which case `gala-local` is the escape hatch.
+  galaReleaseVersion ? "0.81.0",
+  galaReleaseHashes ? {
+    x86_64-linux = "sha256-oUOljzq1hruuJLVogRcpw0IkKhvXoRQ6fahvkYbAGK0=";
+    aarch64-linux = "sha256-iC8AuW9dgTRQehyKbdvesICDho9N/BMyIQs1EcaR8gI=";
+    x86_64-darwin = "sha256-n0BCtXqGSMO0gUvDizudO03UmybU7yt+7zqIUZyUbrg=";
+    aarch64-darwin = "sha256-/KO0rTeo99VAFMHYN76TG5TtfjodnVeBj41sS3J4hRw=";
+  },
+  # Hash of the vendored Go dependencies in the current go.mod. Run
+  # `nix build` once and copy the hash it suggests if this goes stale.
   galaVendorHash ? "sha256-elG9Jqrh0Bug4xWgVVpsPZRR21TWtjeQD7jkffkix34=",
-  bootstrapVendorHash ? "sha256-elG9Jqrh0Bug4xWgVVpsPZRR21TWtjeQD7jkffkix34=",
   version ? (
     let
       line = lib.findFirst (l: lib.hasPrefix "gala " l) "gala 0.0.0" (
@@ -153,32 +164,6 @@ let
     );
   };
 
-  # --- pin parsed from MODULE.bazel's marked block (single source of truth,
-  # written only by tools/bootstrap/bump.sh) ---
-  readFlat = path: lib.replaceStrings [ "\n" ] [ " " ] (builtins.readFile path);
-  moduleText = readFlat (repoRoot + "/MODULE.bazel");
-  mustMatch =
-    re: text:
-    let
-      m = builtins.match re text;
-    in
-    if m == null then throw "MODULE.bazel: no match for ${re}" else builtins.head m;
-  pinRepo = mustMatch ".*# repo: ([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+).*" moduleText;
-  pinRev = mustMatch ".*# rev: ([0-9a-f]{40}).*" moduleText;
-  pinHash = mustMatch ".*# nix-hash: (sha256-[A-Za-z0-9+/=]+).*" moduleText;
-  pinRepoSplit = lib.splitString "/" pinRepo;
-  pinnedSource = fetchFromGitHub {
-    owner = builtins.head pinRepoSplit;
-    repo = lib.elemAt pinRepoSplit 1;
-    rev = pinRev;
-    hash = pinHash;
-  };
-  pinnedVersion = lib.removePrefix "gala " (
-    lib.findFirst (l: lib.hasPrefix "gala " l) "gala 0.0.0" (
-      lib.splitString "\n" (builtins.readFile "${pinnedSource}/gala.mod")
-    )
-  );
-
   # Keep in sync with MODULE.bazel's @antlr4_tool http_jar.
   antlrJar = fetchurl {
     url = "https://www.antlr.org/download/antlr-4.13.1-complete.jar";
@@ -210,91 +195,38 @@ let
       '';
     };
   localAntlr = mkAntlr "local" (repoRoot + "/internal/parser/grammar/gala.g4");
-  pinnedAntlr = mkAntlr "pinned" "${pinnedSource}/internal/parser/grammar/gala.g4";
 
-  # GOFLAGS can't be passed to buildGoModule directly (it collides with the
-  # env it computes), so pin it after the fact. -trimpath must be identical
-  # in every build that shares GOCACHE entries or the cache misses.
-  pinGoFlags =
-    drv:
-    drv.overrideAttrs (old: {
-      env = old.env // {
-        GOFLAGS = "-trimpath -mod=vendor";
-      };
-    });
-
-  # The exported build cache references the Go SDK; the final build imports
-  # it with the same flags, so both need allowGoReference.
-  exportGoCache = ''
-    mkdir -p "$out/go-cache"
-    cp -r --reflink=auto "$GOCACHE"/. "$out/go-cache/"
-  '';
-
-  # --- Stage A: everything from the pinned revision ---
-  pinnedBootstrap = pinGoFlags (buildGoModule {
-    pname = "gala-bootstrap-pinned";
-    inherit version;
-    src = pinnedSource;
-    vendorHash = bootstrapVendorHash;
-    subPackages = [
-      "cmd/gala_bootstrap"
-      "cmd/stdlib_gen"
-    ];
-    allowGoReference = true;
-    doCheck = false;
-
-    # The dependency-fetching fixed-output derivation inherits preBuild and
-    # postPatch, but must stay a plain `go mod vendor`.
-    overrideModAttrs = _final: _prev: {
-      preBuild = "";
-      postPatch = "";
+  # Downloaded release binary used to transpile the stdlib. fetchurl does not
+  # preserve the executable bit, so wrap it with install -m755. The tool runs
+  # at build time, so select the asset by buildPlatform, not hostPlatform.
+  releaseAssets = {
+    x86_64-linux = "gala-linux-amd64";
+    aarch64-linux = "gala-linux-arm64";
+    x86_64-darwin = "gala-darwin-amd64";
+    aarch64-darwin = "gala-darwin-arm64";
+  };
+  releaseSystem = stdenv.buildPlatform.system;
+  releaseGalaBin = stdenv.mkDerivation {
+    pname = "gala-release-bin";
+    version = galaReleaseVersion;
+    src = fetchurl {
+      url = "https://github.com/martianoff/gala/releases/download/${galaReleaseVersion}/${releaseAssets.${releaseSystem}}";
+      hash = galaReleaseHashes.${releaseSystem};
     };
-
-    postPatch = ''
-      cp ${pinnedAntlr}/internal/parser/grammar/*.go internal/parser/grammar/
+    dontUnpack = true;
+    dontConfigure = true;
+    dontBuild = true;
+    dontFixup = true;
+    installPhase = ''
+      mkdir -p "$out/bin"
+      install -m755 "$src" "$out/bin/gala"
     '';
-
-    postInstall = exportGoCache;
-  });
-
-  # Same transpile step as localTranspiled, but over the pinned tree, so
-  # pinnedGala embeds the stdlib exactly as the pinned compiler does.
-  pinnedStdlib = mkTranspiled {
-    name = "gala-stdlib-pinned";
-    src = pinnedSource;
-    transpiler = "${pinnedBootstrap}/bin/gala_bootstrap";
-    transpilerEnv = "GOGC=300 GOMEMLIMIT=6GiB";
   };
 
-  pinnedGala = pinGoFlags (buildGoModule {
-    pname = "gala-pinned";
-    version = pinnedVersion;
-    src = pinnedSource;
-    vendorHash = bootstrapVendorHash;
-    subPackages = [ "cmd/gala" ];
-    allowGoReference = true;
-    doCheck = false;
-    overrideModAttrs = _final: _prev: {
-      preBuild = "";
-      postPatch = "";
-    };
-    postPatch = ''
-      cp ${pinnedAntlr}/internal/parser/grammar/*.go internal/parser/grammar/
-    '';
-    preBuild = ''
-      ${pinnedBootstrap}/bin/stdlib_gen -output internal/stdlib/embedded_gen.go \
-        ${pinnedStdlib}/files/*/*
-    '';
-    postInstall = exportGoCache;
-    ldflags = [
-      "-X martianoff/gala/cmd/gala/commands.Version=${pinnedVersion}"
-    ];
-  });
-
-  # --- Stage B: the local tree ---
-
-  # Escape hatch for grammar work the pin cannot parse.
-  localBootstrap = pinGoFlags (buildGoModule {
+  # Escape hatch for grammar work the release cannot parse: build the minimal
+  # transpiler from this tree. cmd/gala_bootstrap does not import
+  # internal/stdlib, so no cycle.
+  localBootstrap = buildGoModule {
     pname = "gala-bootstrap-local";
     inherit version;
     src = goSource;
@@ -308,55 +240,97 @@ let
     postPatch = ''
       cp ${localAntlr}/internal/parser/grammar/*.go internal/parser/grammar/
     '';
-  });
-
-  # The pinned bootstrap is within noise of the pinned full gala for the
-  # stdlib transpile (see tools/bootstrap/README.md), and has no embedded
-  # stdlib to unpack, so it is the default transpiler. pinnedGala stays in
-  # the graph as the GOCACHE seed.
-  localTranspiled = mkTranspiled {
-    name = "gala-stdlib";
-    src = stdlibSource;
-    transpiler =
-      if useLocalBootstrap then
-        "${localBootstrap}/bin/gala_bootstrap"
-      else
-        "${pinnedBootstrap}/bin/gala_bootstrap";
-    transpilerEnv = "GOGC=300 GOMEMLIMIT=6GiB";
   };
 
-  # Reads internal/stdlib/BUILD.bazel's generate_embedded inputs exactly as
-  # Bazel does and stages them under $out/files:
+  localTranspiled = mkTranspiled {
+    name = "gala-stdlib";
+    transpiler =
+      if useLocalBootstrap then "${localBootstrap}/bin/gala_bootstrap" else "${releaseGalaBin}/bin/gala";
+    perPackage = !useLocalBootstrap;
+  };
+
+  # Transpiles the stdlib and stages the generate_embedded inputs under
+  # $out/files:
   #   - transpiled .gala targets as <name>.gen.go
   #   - verbatim .gala/.go inputs under their original names
   # The final `gala` build packs them with cmd/stdlib_gen; keeping the pack
   # step out of this derivation means a Go edit does not retranspile the
   # stdlib, and a stdlib edit does not rebuild any Go derivation.
-  # `transpiler` must be a gala_bootstrap with batch mode (--inputs/--outputs).
+  #
+  # Every non-test .gala file on disk is transpiled (release transpile-package
+  # calls list all of them, so its sibling set matches a directory scan), but
+  # only the generate_embedded set is staged — the concurrent package's
+  # unlisted retry.gala is transpiled and dropped.
   mkTranspiled =
     {
       name,
-      src,
       transpiler,
-      transpilerArgs ? "",
-      transpilerEnv ? "",
+      # Release binaries before --scan need one transpile-package invocation
+      # per package; gala_bootstrap's batch mode takes all files at once.
+      perPackage,
     }:
     stdenv.mkDerivation {
       pname = name;
-      inherit version src;
+      inherit version;
+      src = stdlibSource;
       nativeBuildInputs = [ go ];
       dontConfigure = true;
       dontInstall = true;
+
+      # The release binary extracts its embedded stdlib into GALA_HOME (and
+      # falls back to HOME); both must be writable in the sandbox. --search
+      # "$PWD" comes first, so the local stdlib wins over the extracted one.
+      GALA_HOME = "$TMPDIR/gala-home";
+      HOME = "$TMPDIR/home";
+
       buildPhase = ''
         runHook preBuild
-        mkdir -p "$out/files" "$TMPDIR/transpiled"
+        shopt -s nullglob
+        mkdir -p "$out/files" "$TMPDIR/transpiled" "$GALA_HOME" "$HOME"
         embeddedSrcs="$TMPDIR/embedded_srcs.txt"
         awk '/name = "generate_embedded"/,/outs = \["embedded_gen.go"\]/' \
           internal/stdlib/BUILD.bazel \
           | grep -o '"//[^"]*:[^"]*"' | tr -d '"' | sort -u > "$embeddedSrcs"
-
+      ''
+      + lib.optionalString perPackage ''
+        for pkg in ${lib.escapeShellArgs stdlibPkgs}; do
+          batchInputs=()
+          batchOutputs=()
+          for f in "$pkg"/*.gala; do
+            case "$f" in *_test.gala) continue ;; esac
+            stem="''${f##*/}"
+            batchInputs+=("$f")
+            batchOutputs+=("$TMPDIR/transpiled/$pkg/''${stem%.gala}.gen.go")
+          done
+          [ "''${#batchInputs[@]}" -eq 0 ] && continue
+          mkdir -p "$TMPDIR/transpiled/$pkg"
+          echo "gala: transpiling ''${#batchInputs[@]} files in $pkg"
+          ${transpiler} transpile-package \
+            --inputs "$(IFS=,; echo "''${batchInputs[*]}")" \
+            --outputs "$(IFS=,; echo "''${batchOutputs[*]}")" \
+            --search "$PWD" --goroot="${go}/share/go"
+        done
+      ''
+      + lib.optionalString (!perPackage) ''
         batchInputs=()
         batchOutputs=()
+        for pkg in ${lib.escapeShellArgs stdlibPkgs}; do
+          for f in "$pkg"/*.gala; do
+            case "$f" in *_test.gala) continue ;; esac
+            stem="''${f##*/}"
+            batchInputs+=("$f")
+            batchOutputs+=("$TMPDIR/transpiled/$pkg/''${stem%.gala}.gen.go")
+          done
+        done
+        echo "gala: transpiling ''${#batchInputs[@]} files (local bootstrap)"
+        GOGC=300 GOMEMLIMIT=6GiB ${transpiler} \
+          --inputs "$(IFS=,; echo "''${batchInputs[*]}")" \
+          --outputs "$(IFS=,; echo "''${batchOutputs[*]}")" \
+          --search "$PWD" --goroot="${go}/share/go"
+      ''
+      + ''
+        # Stage only the embedded set: transpiled files must not carry the
+        # extra outputs (or stdlib_gen would embed them).
         while IFS= read -r label; do
           pkg="''${label#//}"
           pkg="''${pkg%%:*}"
@@ -365,7 +339,7 @@ let
             *_go)
               stem="''${file%_go}"
               # Resolve the target to its src attribute so a renamed .gala
-              # file is still transpiled from the right source.
+              # file is still staged from the right transpiled output.
               srcfile=$(awk -v name="\"$file\"" '
                 $0 ~ ("name = " name) { found = 1; next }
                 found && /src = "/ {
@@ -374,9 +348,9 @@ let
                   exit
                 }' "$pkg/BUILD.bazel")
               [ -n "$srcfile" ] || srcfile="$stem.gala"
-              mkdir -p "$TMPDIR/transpiled/$pkg"
-              batchInputs+=("$pkg/$srcfile")
-              batchOutputs+=("$TMPDIR/transpiled/$pkg/$stem.gen.go")
+              srcstem="''${srcfile%.gala}"
+              mkdir -p "$out/files/$pkg"
+              cp "$TMPDIR/transpiled/$pkg/$srcstem.gen.go" "$out/files/$pkg/$stem.gen.go"
               ;;
             *)
               mkdir -p "$out/files/$pkg"
@@ -384,22 +358,13 @@ let
               ;;
           esac
         done < "$embeddedSrcs"
-
-        inList="$(IFS=,; echo "''${batchInputs[*]}")"
-        outList="$(IFS=,; echo "''${batchOutputs[*]}")"
-        echo "gala: transpiling ''${#batchInputs[@]} files"
-        ${transpilerEnv} ${transpiler} ${transpilerArgs} \
-          --inputs "$inList" --outputs "$outList" \
-          --search "$PWD" --goroot="${go}/share/go"
-
-        cp -r "$TMPDIR/transpiled/." "$out/files/"
         echo "gala: staged $(find "$out/files" -type f | wc -l) stdlib files"
         runHook postBuild
       '';
     };
 in
 let
-  gala = pinGoFlags (buildGoModule {
+  gala = buildGoModule {
     pname = "gala";
     src = goSource;
     inherit version;
@@ -407,9 +372,6 @@ let
     subPackages = [ "cmd/gala" ];
 
     vendorHash = galaVendorHash;
-
-    # Must match pinnedGala's flags Go-cache-wise.
-    allowGoReference = true;
 
     # The dependency-fetching fixed-output derivation inherits preBuild and
     # postPatch, but must not run the overlay below.
@@ -428,14 +390,10 @@ let
     # test against the installed binary instead.
     doCheck = false;
 
-    # Overlay the staged outputs and warm the Go build cache from the pinned
-    # build, so unchanged internal/... packages compile only once. The stdlib
-    # is packed here rather than in localTranspiled so this derivation is the
-    # only one that sees the Go source.
+    # Overlay the local grammar and pack the stdlib staged by localTranspiled.
+    # The stdlib is packed here rather than in localTranspiled so this
+    # derivation is the only one that sees the Go source.
     preBuild = ''
-      mkdir -p "$GOCACHE"
-      cp -r --reflink=auto ${pinnedGala}/go-cache/. "$GOCACHE"/
-      chmod -R u+w "$GOCACHE"
       cp ${localAntlr}/internal/parser/grammar/*.go internal/parser/grammar/
       go build -mod=vendor -o "$TMPDIR/stdlib_gen" ./cmd/stdlib_gen
       "$TMPDIR/stdlib_gen" -output internal/stdlib/embedded_gen.go \
@@ -449,14 +407,13 @@ let
       mainProgram = "gala";
       platforms = lib.platforms.unix;
     };
-  });
+  };
 in
 gala.overrideAttrs (old: {
   passthru = (old.passthru or { }) // {
     inherit
-      pinnedGala
-      pinnedBootstrap
-      pinnedStdlib
+      releaseGalaBin
+      localAntlr
       localBootstrap
       localTranspiled
       ;
