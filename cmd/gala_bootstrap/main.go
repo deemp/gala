@@ -1,6 +1,9 @@
 // gala_bootstrap is a minimal transpiler used for bootstrapping.
-// It transpiles GALA to Go without any stdlib embedding features.
-// Used internally to generate stdlib Go files, breaking the dependency cycle.
+// It transpiles GALA to Go without any stdlib embedding features. Unlike
+// cmd/gala it does not import internal/stdlib, so it can be built from the
+// same tree whose stdlib it transpiles: Bazel uses it to generate the stdlib
+// Go files that the full transpiler embeds, and nix/gala.nix uses it as the
+// useLocalBootstrap escape hatch.
 package main
 
 import (

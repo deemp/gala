@@ -55,9 +55,18 @@ nix develop       # shell with bazelisk, go, jdk21
 direnv allow      # with direnv: enter the shell automatically on cd
 ```
 
-`nix build .#gala` builds the CLI from source with the same pinned stage-0
-compiler Bazel uses (see [Bootstrapping](#bootstrapping)). The flake covers
-`x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`.
+`nix build .#gala` builds the CLI from source. The stdlib is transpiled by
+the released `gala` binary pinned in [`nix/gala.nix`](nix/gala.nix)
+(`galaReleaseVersion` and its four asset hashes). Releases can lag the tree
+(codegen or grammar changes), so for local transpiler or grammar work use the
+escape hatch, which builds `cmd/gala_bootstrap` from this tree instead:
+
+```bash
+nix build .#gala-local
+```
+
+The flake covers `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and
+`aarch64-darwin`.
 
 > **NixOS:** the dev shell provides `bazel` via Bazelisk, which downloads a
 > dynamically linked Bazel. On NixOS that binary needs `nix-ld` or an FHS
@@ -137,54 +146,6 @@ gala/
   docs/                            # Language specification and documentation
   ide/intellij/                    # IntelliJ IDEA plugin
 ```
-
-## Bootstrapping
-
-GALA's standard library is written in GALA, so building it needs a working
-GALA transpiler. Building that transpiler from the working tree would
-recreate the dependency cycle: the transpiler embeds the stdlib, and the
-stdlib needs the transpiler. The build therefore uses a **stage-0 compiler
-built from a pinned, already-landed revision** of the repo.
-
-The pin lives in `MODULE.bazel` in a marked block managed by
-[`tools/bootstrap/bump.sh`](tools/bootstrap/bump.sh); see
-[`tools/bootstrap/README.md`](tools/bootstrap/README.md) for the format, the
-bump procedure, and the reachability rules.
-
-- **Bazel**: the bootstrap toolchain
-  (`//tools/toolchain:gala_bootstrap_toolchain_impl`) uses the pinned
-  compiler's `gala_bootstrap` by default. For grammar or transpiler changes
-  the pin cannot parse yet, build the working tree's bootstrap instead:
-
-  ```bash
-  bazel build --define=gala_bootstrap=local //...
-  ```
-
-- **Nix**: `nix/gala.nix` parses the same `MODULE.bazel` block with
-  `fetchFromGitHub`, so both build systems use the same revision. Local
-  grammar work can use the `useLocalBootstrap` argument (same escape hatch).
-
-### Fixpoint check
-
-`tools/bootstrap/fixpoint.sh` builds `//internal/stdlib:generate_embedded`
-twice — once with the pinned compiler, once with
-`--define=gala_bootstrap=local` — and diffs the results. If the working
-tree's compiler generates different stdlib Go, the check fails:
-
-- If the change is unintended, fix the code.
-- If the change is intended (the generator legitimately changed), bump the
-  pin to a revision containing it:
-
-  ```bash
-  tools/bootstrap/bump.sh <40-hex-commit>
-  ```
-
-CI runs the fixpoint check after the test step. The pinned revision must
-contain `gala_bootstrap` batch mode (`--inputs/--outputs`) and
-`gala transpile-package --scan`; a revision older than those fails the
-build loudly rather than producing wrong output. The repo merges PRs with
-merge commits, so **do not squash-merge a PR whose commits are pinned**;
-bump to the merge commit right after.
 
 ## How to Add a New Language Feature
 
