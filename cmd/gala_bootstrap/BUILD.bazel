@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 # Bootstrap transpiler without stdlib embedding.
 # Used to generate stdlib Go files, breaking the dependency cycle.
@@ -20,4 +20,10 @@ go_binary(
     name = "gala_bootstrap",
     embed = [":gala_bootstrap_lib"],
     visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "gala_bootstrap_test",
+    srcs = ["main_test.go"],
+    embed = [":gala_bootstrap_lib"],
 )

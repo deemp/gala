@@ -38,6 +38,10 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Error: -inputs/-outputs cannot be combined with -input/-output")
 			os.Exit(1)
 		}
+		if *packageFiles != "" {
+			fmt.Fprintln(os.Stderr, "Error: -inputs/-outputs cannot be combined with -package-files")
+			os.Exit(1)
+		}
 		if err := runBatch(strings.Split(*inputs, ","), strings.Split(*outputs, ","), paths); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -98,7 +102,12 @@ func runBatch(inList, outList, paths []string) error {
 			return fmt.Errorf("reading %s: %w", in, err)
 		}
 
-		a.SetPackageFiles(siblingsFor(inList, in))
+		// Pass no explicit package files: that would replace the analyzer's
+		// directory scan rather than add to it, hiding same-directory .gala
+		// files that are not in inList. Clearing also resets checkedDirs, so
+		// each file gets a fresh scan. This matches Bazel, which passes no
+		// explicit list at all.
+		a.SetPackageFiles(nil)
 
 		tr := transformer.NewGalaASTTransformer()
 		g := generator.NewGoCodeGenerator()
@@ -119,14 +128,4 @@ func runBatch(inList, outList, paths []string) error {
 		}
 	}
 	return nil
-}
-
-func siblingsFor(inList []string, current string) []string {
-	var siblings []string
-	for _, other := range inList {
-		if other != current && filepath.Dir(other) == filepath.Dir(current) {
-			siblings = append(siblings, other)
-		}
-	}
-	return siblings
 }
