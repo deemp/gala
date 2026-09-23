@@ -26,4 +26,10 @@ go_test(
     name = "gala_bootstrap_test",
     srcs = ["main_test.go"],
     embed = [":gala_bootstrap_lib"],
+    deps = [
+        "//internal/transpiler",
+        "//internal/transpiler/analyzer",
+        "//internal/transpiler/generator",
+        "//internal/transpiler/transformer",
+    ],
 )
