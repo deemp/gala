@@ -45,7 +45,9 @@
             packages = [
               # Does not ship a `bazel` command; add one so the documented
               # `bazel build //...` invocations work. Bazelisk honours the
-              # .bazelversion pin (9.2.0).
+              # .bazelversion pin (9.2.0). Bazelisk downloads a dynamically
+              # linked Bazel: on NixOS it needs `nix-ld` (or an FHS wrapper),
+              # while macOS and non-NixOS Linux run it as-is.
               (pkgs.writeShellScriptBin "bazel" ''
                 exec ${pkgs.bazelisk}/bin/bazelisk "$@"
               '')
