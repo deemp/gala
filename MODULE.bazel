@@ -90,3 +90,17 @@ filegroup(
     strip_prefix = "gradle-9.1.0",
     urls = ["https://services.gradle.org/distributions/gradle-9.1.0-bin.zip"],
 )
+
+# BEGIN gala_bootstrap_src (managed by tools/bootstrap/bump.sh)
+# Stage-0 compiler: a previously landed revision used to build the stdlib.
+# Bump policy: see CONTRIBUTING.MD "Bootstrapping".
+# repo: deemp/gala
+# rev: d8d4015d569d443969c888e693765b822d0ab5a4
+# nix-hash: sha256-GfieO58Iaa1lMufbZW1ABlN3VG6+wWttx8kU1vrHzUY=
+http_archive(
+    name = "gala_bootstrap_src",
+    urls = ["https://github.com/deemp/gala/archive/d8d4015d569d443969c888e693765b822d0ab5a4.tar.gz"],
+    strip_prefix = "gala-d8d4015d569d443969c888e693765b822d0ab5a4",
+    sha256 = "78e7ef16bcedb5b0885a754f47d52fb5cb6b66dfe28f96affad3c79cde3f36f5",
+)
+# END gala_bootstrap_src
