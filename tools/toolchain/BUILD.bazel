@@ -33,10 +33,27 @@ toolchain(
     visibility = ["//visibility:public"],
 )
 
+# `--define=gala_bootstrap=local` builds the bootstrap from the working
+# tree; the default uses the pinned stage-0 compiler declared in MODULE.bazel
+# (see tools/bootstrap/README.md). The escape hatch exists for grammar work
+# the pin cannot parse yet.
+config_setting(
+    name = "local_bootstrap",
+    values = {"define": "gala_bootstrap=local"},
+)
+
+alias(
+    name = "gala_bootstrap",
+    actual = select({
+        ":local_bootstrap": "//cmd/gala_bootstrap",
+        "//conditions:default": "@gala_bootstrap_src//cmd/gala_bootstrap:gala_bootstrap",
+    }),
+)
+
 gala_bootstrap_toolchain(
     name = "gala_bootstrap_toolchain_impl",
-    gala_bootstrap = "//cmd/gala_bootstrap",
-    all_gala_sources = "//:all_gala_sources",
+    gala_bootstrap = ":gala_bootstrap",
+    all_gala_sources = "//:bootstrap_gala_sources",
     go_mod = "//:go.mod",
     visibility = ["//visibility:public"],
 )
