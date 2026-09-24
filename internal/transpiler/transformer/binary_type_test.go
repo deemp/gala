@@ -90,3 +90,18 @@ func TestUnresolvableOperandKeepsTheConstantsDefault(t *testing.T) {
 		t.Errorf("getExprType = %#v, want the constant's int default", got)
 	}
 }
+
+func TestExprTypeCacheReset(t *testing.T) {
+	tr := NewGalaASTTransformer().(*galaASTTransformer)
+	oldExpr := ast.NewIdent("old")
+	tr.exprTypeCache[oldExpr] = transpiler.BasicType{Name: "int"}
+	tr.resetExprTypeCache()
+	if len(tr.exprTypeCache) != 0 {
+		t.Fatalf("cache has %d entries after reset", len(tr.exprTypeCache))
+	}
+	tr.exprTypeCache[ast.NewIdent("new")] = transpiler.BasicType{Name: "string"}
+	tr.resetExprTypeCache()
+	if len(tr.exprTypeCache) != 0 {
+		t.Fatalf("cache has %d entries after second reset", len(tr.exprTypeCache))
+	}
+}

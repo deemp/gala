@@ -17,6 +17,7 @@ import (
 	"martianoff/gala/internal/transpiler"
 	"martianoff/gala/internal/transpiler/analyzer"
 	"martianoff/gala/internal/transpiler/generator"
+	"martianoff/gala/internal/transpiler/profiler"
 	"martianoff/gala/internal/transpiler/transformer"
 )
 
@@ -86,16 +87,26 @@ func NewBuilderForMode(projectDir string, stdlibVersion string, verbose bool, mo
 	}, nil
 }
 
+func timedBuildPhase(p *profiler.Profiler, label string, fn func() error) error {
+	done := p.Phase(label)
+	err := fn()
+	done()
+	return err
+}
+
 // Build executes the full build process and returns the path to the output binary.
 // If outputPath is empty, uses the module name. If it's an absolute path, uses it directly.
 // Otherwise, treats it as relative to the project directory.
 // For library packages (non-main), Build performs a compile check and returns "" with no error.
 func (b *Builder) Build(outputPath string) (string, error) {
+	buildProf := profiler.New("build")
+	defer buildProf.Report()
+
 	// Step 0: Verify Go toolchain is on PATH before doing any work.
 	// GALA transpiles to Go, so `go build` is a hard prerequisite. Without
 	// this check users see a cryptic `exec: "go": executable file not found`
 	// error only after transpilation completes.
-	if err := ensureGoToolchain(); err != nil {
+	if err := timedBuildPhase(buildProf, "toolchain.check", ensureGoToolchain); err != nil {
 		return "", err
 	}
 
@@ -103,14 +114,16 @@ func (b *Builder) Build(outputPath string) (string, error) {
 	if b.verbose {
 		fmt.Printf("Using workspace: %s\n", b.workspace.Dir)
 	}
-	if err := b.workspace.Ensure(); err != nil {
+	if err := timedBuildPhase(buildProf, "workspace.ensure", b.workspace.Ensure); err != nil {
 		return "", fmt.Errorf("ensuring workspace: %w", err)
 	}
 
 	// Step 1.1: Take the workspace lock. The workspace is a single mutable
 	// tree, so a second gala process working in it would delete this build's
 	// files mid-transpile.
+	done := buildProf.Phase("workspace.lock")
 	lock, err := b.workspace.Lock(lockTimeout(workspaceLockTimeout))
+	done()
 	if err != nil {
 		return "", err
 	}
@@ -122,51 +135,57 @@ func (b *Builder) Build(outputPath string) (string, error) {
 		if b.verbose && err == nil {
 			fmt.Printf("GALA version changed (%s -> %s), invalidating workspace\n", string(oldVer), b.stdlibVersion)
 		}
-		if err := b.invalidateWorkspace(versionFile); err != nil {
+		if err := timedBuildPhase(buildProf, "workspace.invalidate", func() error {
+			return b.invalidateWorkspace(versionFile)
+		}); err != nil {
 			return "", err
 		}
 	}
 
 	// Step 2: Ensure stdlib is extracted to versioned cache
-	if err := b.ensureStdlib(); err != nil {
+	if err := timedBuildPhase(buildProf, "stdlib.ensure", b.ensureStdlib); err != nil {
 		return "", fmt.Errorf("ensuring stdlib: %w", err)
 	}
 
 	// Step 2.5: Fetch missing GALA dependencies
-	if err := b.ensureDeps(); err != nil {
+	if err := timedBuildPhase(buildProf, "deps.fetch", b.ensureDeps); err != nil {
 		return "", fmt.Errorf("fetching dependencies: %w", err)
 	}
 
 	// Step 2.6: Transpile GALA dependencies
-	if err := b.transpileDeps(); err != nil {
+	if err := timedBuildPhase(buildProf, "deps.transpile", b.transpileDeps); err != nil {
 		return "", fmt.Errorf("transpiling dependencies: %w", err)
 	}
 
 	// Step 3: Transpile .gala files to workspace
-	if err := b.transpile(); err != nil {
+	if err := timedBuildPhase(buildProf, "project.transpile", b.transpile); err != nil {
 		return "", fmt.Errorf("transpiling: %w", err)
 	}
 
 	// Step 4: Generate go.mod in workspace
-	if err := b.generateGoMod(); err != nil {
+	if err := timedBuildPhase(buildProf, "go.mod.generate", b.generateGoMod); err != nil {
 		return "", fmt.Errorf("generating go.mod: %w", err)
 	}
 
 	// Step 4.5: Decide what to build.
+	done = buildProf.Phase("build.target")
 	buildTarget, err := b.buildTarget()
+	done()
 	if err != nil {
 		return "", err
 	}
 	if buildTarget == "" {
 		// Nothing executable to produce — compile-check the libraries.
-		if err := b.goCompileCheck(); err != nil {
+		if err := timedBuildPhase(buildProf, "go.compile-check", b.goCompileCheck); err != nil {
 			return "", fmt.Errorf("go build (compile check): %w", err)
 		}
 		return "", nil
 	}
 
 	// Step 5: Run go build (executable)
+	done = buildProf.Phase("go.build")
 	finalPath, err := b.goBuild(outputPath, buildTarget)
+	done()
 	if err != nil {
 		return "", fmt.Errorf("go build: %w", err)
 	}

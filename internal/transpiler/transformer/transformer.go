@@ -137,6 +137,14 @@ func (t *galaASTTransformer) TransformForLSP(richAST *transpiler.RichAST) (*tran
 	}, transformErr
 }
 
+func (t *galaASTTransformer) resetExprTypeCache() {
+	if t.exprTypeCache == nil {
+		t.exprTypeCache = make(map[ast.Expr]transpiler.Type, 256)
+	} else {
+		clear(t.exprTypeCache)
+	}
+}
+
 func (t *galaASTTransformer) Transform(richAST *transpiler.RichAST) (fset *token.FileSet, file *ast.File, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -167,6 +175,7 @@ func (t *galaASTTransformer) Transform(richAST *transpiler.RichAST) (fset *token
 	}()
 	tree := richAST.Tree
 	t.currentScope = nil
+	t.resetExprTypeCache()
 	t.lspVarTypes = make(map[string]transpiler.Type)
 	t.lspLambdaParamHints = t.lspLambdaParamHints[:0]
 	t.needsStdImport = false

@@ -22,6 +22,7 @@ import (
 	"martianoff/gala/internal/transpiler"
 	"martianoff/gala/internal/transpiler/analyzer"
 	"martianoff/gala/internal/transpiler/generator"
+	"martianoff/gala/internal/transpiler/profiler"
 	"martianoff/gala/internal/transpiler/transformer"
 )
 
@@ -382,6 +383,8 @@ func runWorkerTranspilePackage(argv []string, out io.Writer) int {
 	if dirs := parseGoSrc(goSrc); dirs != nil {
 		batch.SetGoSrcDirs(dirs)
 	}
+	summary := profiler.NewSummary()
+	defer summary.ReportTo(out)
 
 	hasError := false
 	for i, inputPath := range inList {
@@ -413,7 +416,7 @@ func runWorkerTranspilePackage(argv []string, out io.Writer) int {
 		g := generator.NewGoCodeGenerator()
 		t := transpiler.NewGalaToGoTranspiler(parser, batch, tr, g)
 
-		goCode, err := t.Transpile(string(content), inputPath)
+		goCode, err := t.TranspileWithSummary(string(content), inputPath, summary)
 		if err != nil {
 			fmt.Fprintf(out, "Error transpiling %s: %v\n", inputPath, err)
 			hasError = true
