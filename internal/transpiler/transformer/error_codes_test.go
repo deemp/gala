@@ -548,6 +548,81 @@ func main() {
 			expectContains: "`if` takes no initializer statement",
 		},
 		{
+			name: "GALA-E0048 method on an alias to a built-in type",
+			input: `package main
+
+type DateTime int64
+
+func (d DateTime) Millis() int64 = int64(d)
+
+func main() {
+    Println(DateTime(5).Millis())
+}`,
+			expectCode:     galaerr.CodeMethodOnNonLocalAlias,
+			expectContains: "it resolves to the built-in type int64",
+		},
+		{
+			name: "GALA-E0048 method on an alias to an imported type",
+			input: `package main
+
+import "time"
+
+type Dur time.Duration
+
+func (d Dur) Ticks() int64 = 1
+
+func main() {
+    Println(Dur(5).Ticks())
+}`,
+			expectCode:     galaerr.CodeMethodOnNonLocalAlias,
+			expectContains: "it resolves to time.Duration, declared in another package",
+		},
+		{
+			name: "GALA-E0048 method through a chain of aliases to a built-in",
+			input: `package main
+
+type A int64
+type B A
+
+func (b B) X() int64 = 1
+
+func main() {
+    Println(B(5).X())
+}`,
+			expectCode:     galaerr.CodeMethodOnNonLocalAlias,
+			expectContains: "it resolves to the built-in type int64",
+		},
+		{
+			name: "GALA-E0048 method declared above its own alias",
+			input: `package main
+
+func (d Millis) Ms() int64 = 1
+
+type Millis int64
+
+func main() {
+    Println(Millis(5).Ms())
+}`,
+			expectCode: galaerr.CodeMethodOnNonLocalAlias,
+			// The alias table fills as declarations are walked, so this shape
+			// only resolves because receivers are checked after the whole file.
+			expectContains: "it resolves to the built-in type int64",
+		},
+		{
+			name: "GALA-E0048 method on an alias to an unnamed func type",
+			input: `package main
+
+type Handler func(int) int
+
+func (h Handler) Twice() int = 2
+
+func main() {
+    Println(Handler((x) => x).Twice())
+}`,
+			expectCode:     galaerr.CodeMethodOnNonLocalAlias,
+			expectContains: "which names no type of its own",
+		},
+		{
 			name: "GALA-E0047 single-value initializer is rejected too",
 			input: `package main
 

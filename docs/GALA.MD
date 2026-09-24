@@ -625,14 +625,70 @@ val res = Implode(SliceOf("a", "b")) // expanded to Implode{}.Apply(SliceOf("a",
 
 ### Type Aliases
 
-Type aliases create an alternative name for an existing type. The alias is identical to the original type — they can be used interchangeably.
+`type X Y` declares an **alias**: a second name for an existing type, not a new
+type. The alias and its target are the same type and are interchangeable
+everywhere — a value of one *is* a value of the other, with no conversion and no
+separate identity.
 
 ```gala
 type MyString string
-type Handler func(Request) Response
+type Millis   int64
+type Handler  func(Request) Response
+type Coord    Point                    // Point is a struct in this package
 ```
 
-Type aliases transpile to Go type aliases (`type X = Y`), so methods defined on the original type are available on the alias.
+Aliases transpile to Go type aliases (`type X = Y`), which is what makes them
+transparent: methods on the target are available through the alias, and an
+alias declared in one file is visible to every file in the same package.
+
+#### What an alias can do
+
+| Use | Example | Notes |
+|---|---|---|
+| Annotate a type | `val s MyString = "hello"` | The alias stands wherever the target does |
+| Convert | `Millis(v)`, `MyString(s)` | The ordinary [type conversion](#type-conversions) — `Millis(v)` *is* `int64(v)` |
+| Construct, when the target is a struct | `Coord(1, 2)` | Reaches the target's fields, so named and positional construction both work |
+| Carry a generic instantiation | `type IntPair Pair[int]` then `IntPair(1, 2)` | The alias names the instantiation; do not re-apply type arguments. It takes no methods — see below |
+| Take methods, when the target is a **plain local type** | `func (c Coord) Sum() int = c.X + c.Y` | Legal because the receiver base type `Point` is declared in this package |
+
+#### What an alias cannot do
+
+**It cannot take a method unless its target is a plain type declared in this
+package.** The receiver base type is the *target*, and Go accepts a method only
+on a plain, locally declared type — so a built-in, an imported type, an unnamed
+composite (slice, map, func) and an instantiated type are all
+[GALA-E0048](errors/GALA-E0048.md):
+
+```gala
+type Millis int64
+func (d Millis) Value() int64 = int64(d)     // built-in target
+
+type Dur time.Duration
+func (d Dur) Ticks() int64 = 1               // imported target
+
+type Handler func(Request) Response
+func (h Handler) Name() string = "h"         // unnamed composite
+
+type IntPair Pair[int]
+func (p IntPair) First() int = p.A           // instantiated type
+```
+
+The alias chain is followed to its end, so `type A int64; type B A` makes a
+method on `B` illegal for the same reason. A pointer target is fine when it
+points at a local type — `type PP *Point` puts the method on `Point`.
+
+Wrap the value in a struct when you need methods of your own:
+
+```gala
+struct Millis(Value int64)
+
+func (m Millis) Seconds() float64 = float64(m.Value) / 1000.0
+```
+
+**It does not create a distinct type.** An alias cannot be matched, overloaded
+or type-switched apart from its target, and it does not make an illegal
+assignment illegal — `MyString` and `string` are one type. GALA has no newtype
+declaration; a single-field struct is the way to get a separate identity.
 
 > **Note:** Type aliases are generally not recommended. Prefer using the original type directly — it keeps code clearer and avoids indirection. Type aliases are mainly useful for Go interop scenarios where you need to bridge between GALA and existing Go type names, or when mixing `.gala` and `.go` files in the same package (where GALA type aliases avoid dot-import conflicts with Go type alias declarations).
 

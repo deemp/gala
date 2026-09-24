@@ -630,7 +630,10 @@ func (t *galaASTTransformer) transformFunctionDeclaration(ctx *grammar.FunctionD
 		}
 		originalRecvTypeExpr = recvTypeExpr // Store before potential Immutable wrapping
 
-		receiverType := t.resolveType(t.getBaseTypeName(recvTypeExpr))
+		recvBaseName := t.getBaseTypeName(recvTypeExpr)
+		t.recordMethodReceiver(recvCtx, recvBaseName)
+
+		receiverType := t.resolveType(recvBaseName)
 		receiverBaseName := receiverType.BaseName()
 
 		// For non-pointer receivers, try to preserve type parameters for lambda type inference
