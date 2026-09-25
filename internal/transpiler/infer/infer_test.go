@@ -135,3 +135,49 @@ func TestInfer(t *testing.T) {
 		})
 	}
 }
+
+var (
+	benchmarkInferredType Type
+	benchmarkAppliedEnv   TypeEnv
+)
+
+func BenchmarkInferMonomorphicApplication(b *testing.B) {
+	intType := &TypeConst{Name: "int"}
+	resultType := &TypeApp{
+		Name: "Result",
+		Args: []Type{&TypeApp{Name: "Box", Args: []Type{intType}}},
+	}
+	env := TypeEnv{
+		"f": {Type: &TypeApp{Name: "->", Args: []Type{intType, resultType}}},
+		"x": {Type: intType},
+	}
+	expr := &App{Fn: &Var{Name: "f"}, Arg: &Var{Name: "x"}}
+	inf := NewInferer()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		typ, err := inf.Infer(env, expr)
+		if err != nil {
+			b.Fatal(err)
+		}
+		benchmarkInferredType = typ
+	}
+}
+
+func BenchmarkTypeEnvApplyEmpty(b *testing.B) {
+	env := make(TypeEnv, 16)
+	for i := 0; i < 16; i++ {
+		intType := &TypeConst{Name: "int"}
+		env[string(rune('a'+i))] = &Scheme{
+			Type: &TypeApp{
+				Name: "Box",
+				Args: []Type{&TypeApp{Name: "Result", Args: []Type{intType}}},
+			},
+		}
+	}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		benchmarkAppliedEnv = env.Apply(nil)
+	}
+}

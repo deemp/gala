@@ -122,7 +122,7 @@ func NewGalaASTTransformer() transpiler.ASTTransformer {
 }
 
 func (t *galaASTTransformer) TransformForLSP(richAST *transpiler.RichAST) (*transpiler.TransformResult, error) {
-	fset, file, transformErr := t.Transform(richAST)
+	fset, file, transformErr := t.transform(richAST, true)
 	// Always return collected var types, even on error (partial results)
 	varTypes := make(map[string]transpiler.Type, len(t.lspVarTypes))
 	for name, typ := range t.lspVarTypes {
@@ -146,7 +146,11 @@ func (t *galaASTTransformer) resetExprTypeCache() {
 	}
 }
 
-func (t *galaASTTransformer) Transform(richAST *transpiler.RichAST) (fset *token.FileSet, file *ast.File, err error) {
+func (t *galaASTTransformer) Transform(richAST *transpiler.RichAST) (*token.FileSet, *ast.File, error) {
+	return t.transform(richAST, false)
+}
+
+func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMetadata bool) (fset *token.FileSet, file *ast.File, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			if semErr, ok := r.(*galaerr.SemanticError); ok {
@@ -177,8 +181,13 @@ func (t *galaASTTransformer) Transform(richAST *transpiler.RichAST) (fset *token
 	tree := richAST.Tree
 	t.currentScope = nil
 	t.resetExprTypeCache()
-	t.lspVarTypes = make(map[string]transpiler.Type)
-	t.lspLambdaParamHints = t.lspLambdaParamHints[:0]
+	if collectLSPMetadata {
+		t.lspVarTypes = make(map[string]transpiler.Type)
+		t.lspLambdaParamHints = t.lspLambdaParamHints[:0]
+	} else {
+		t.lspVarTypes = nil
+		t.lspLambdaParamHints = nil
+	}
 	t.needsStdImport = false
 	t.needsFmtImport = false
 	t.needsUtf8Import = false
