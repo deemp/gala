@@ -1297,6 +1297,9 @@ func (t *galaASTTransformer) transformTypeDeclaration(ctx *grammar.TypeDeclarati
 					)
 				}
 				t.typeAliases[name] = underlyingType
+				// A newly visible alias can change how an unqualified name
+				// normalizes, which is baked into the cached function env.
+				t.invalidateTypeEnv()
 			}
 		}
 
@@ -1365,6 +1368,10 @@ func (t *galaASTTransformer) transformImportDeclaration(ctx *grammar.ImportDecla
 		}
 		specs = append(specs, importSpec)
 	}
+	// The Adds above extend byAlias, which getType consults to resolve a
+	// qualified type name, so the cached function environment is stale once
+	// this import block has been walked.
+	t.invalidateTypeEnv()
 	return &ast.GenDecl{
 		Tok:   token.IMPORT,
 		Specs: specs,

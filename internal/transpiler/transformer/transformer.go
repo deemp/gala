@@ -62,7 +62,6 @@ type galaASTTransformer struct {
 	typeAliases              map[string]transpiler.Type   // type alias name -> underlying type (e.g., "Handler" -> func(string) Future[string])
 	goTypeInfo               *transpiler.GoTypeInfo       // type info from Go packages (stdlib, local Go files, third-party)
 	filePath                 string                       // source file path (for error reporting)
-	sourceLines              []string                     // source lines (for error snippets)
 	richAST                  *transpiler.RichAST          // reference to the primary RichAST for live metadata access
 	traceTypeResolution      bool                         // when true, type resolution events are recorded
 	typeTraces               []TypeTraceEntry             // recorded type resolution events (only when tracing is enabled)
@@ -89,6 +88,11 @@ type galaASTTransformer struct {
 	lspLambdaParamHints      []transpiler.LambdaParamHint // LSP: positions of lambda params with inferred types
 	lastLine                 int                          // last known ANTLR source line (for error reporting in deeply-nested helpers)
 	lastCol                  int                          // last known ANTLR source column (for error reporting in deeply-nested helpers)
+	typeEnvEpoch             uint32                       // invalidates funcTypeEnv; see invalidateTypeEnv
+	funcTypeEnv              infer.TypeEnv                // cached function-derived half of the Hindley-Milner environment for the current file; see functionTypeEnv
+	funcTypeEnvEpoch         uint32                       // typeEnvEpoch the cache above was built at
+	funcTypeEnvNames         map[string]struct{}          // unqualified type names the cached environment normalized; binding one of them in scope makes the cache stale (see scopeShadowsFuncTypeNames)
+	typeNameScratch          typeNameMemo                 // reusable memo for the per-call scope-to-typeEnv conversion in buildTypeEnv
 }
 
 // NewGalaASTTransformer creates a new instance of ASTTransformer for GALA.
@@ -210,6 +214,9 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	for name, underlyingType := range richAST.TypeAliases {
 		t.typeAliases[name] = underlyingType
 	}
+	// t.functions, t.typeMetas, t.typeAliases and the import manager have all
+	// just been replaced, so a cached function environment no longer matches.
+	t.invalidateTypeEnv()
 	t.goTypeInfo = richAST.GoTypeInfo
 	t.tempVarCount = 0
 	t.structMetas = make(map[string]*structMetaConfig)
@@ -223,11 +230,6 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	t.unresolvedSeen = nil
 	t.diagPackageNames = nil
 	t.filePath = richAST.FilePath
-	if richAST.SourceContent != "" {
-		t.sourceLines = strings.Split(richAST.SourceContent, "\n")
-	} else {
-		t.sourceLines = nil
-	}
 
 	// Populate imports from richAST.Packages (includes implicit std import from analyzer)
 	t.importManager.AddFromPackages(richAST.Packages)
@@ -844,6 +846,7 @@ func (t *galaASTTransformer) registerEmbeddedFSMetadata() {
 	if _, exists := t.typeMetas[transpiler.TypeEmbeddedFS]; !exists {
 		t.typeMetas[transpiler.TypeEmbeddedFS] = meta
 	}
+	t.invalidateTypeEnv()
 }
 
 // DumpTypeTrace writes all recorded type resolution events to w.

@@ -144,7 +144,7 @@ func TestTypeNameMemoIsBuildLocal(t *testing.T) {
 	tr.importManager.Add("example.com/a", "", true, "a")
 	tr.typeMetas = make(map[string]*transpiler.TypeMetadata)
 
-	memo := make(map[string]string)
+	memo := &typeNameMemo{}
 	if got := tr.normalizeTypeNameMemoized("Thing", memo); got != "Thing" {
 		t.Fatalf("initial normalization = %q, want Thing", got)
 	}
@@ -152,7 +152,7 @@ func TestTypeNameMemoIsBuildLocal(t *testing.T) {
 	if got := tr.normalizeTypeNameMemoized("Thing", memo); got != "Thing" {
 		t.Fatalf("memoized normalization = %q, want Thing", got)
 	}
-	if got := tr.normalizeTypeNameMemoized("Thing", make(map[string]string)); got != "a.Thing" {
+	if got := tr.normalizeTypeNameMemoized("Thing", &typeNameMemo{}); got != "a.Thing" {
 		t.Fatalf("fresh normalization = %q, want a.Thing", got)
 	}
 }
