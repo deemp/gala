@@ -105,3 +105,54 @@ func TestExprTypeCacheReset(t *testing.T) {
 		t.Fatalf("cache has %d entries after second reset", len(tr.exprTypeCache))
 	}
 }
+
+func TestCachedTypeResolverLifecycle(t *testing.T) {
+	tr := NewGalaASTTransformer().(*galaASTTransformer)
+	tr.packageName = "main"
+	tr.importManager = NewImportManager()
+	tr.typeMetas = make(map[string]*transpiler.TypeMetadata)
+	exists := func(name string) bool {
+		_, ok := tr.typeMetas[name]
+		return ok
+	}
+
+	if _, ok := tr.tryResolveSimpleName("Thing", exists); ok {
+		t.Fatal("unexpected resolution before import was added")
+	}
+	tr.importManager.Add("example.com/a", "", true, "a")
+	tr.typeMetas["a.Thing"] = &transpiler.TypeMetadata{Name: "Thing"}
+	if got, ok := tr.tryResolveSimpleName("Thing", exists); !ok || got != "a.Thing" {
+		t.Fatalf("live resolver = %q, %v; want a.Thing, true", got, ok)
+	}
+
+	tr.cachedTypeResolver = tr.buildTypeResolver()
+	tr.importManager.Add("example.com/b", "", true, "b")
+	tr.typeMetas["b.Other"] = &transpiler.TypeMetadata{Name: "Other"}
+	if got, ok := tr.tryResolveSimpleName("Other", exists); ok {
+		t.Fatalf("snapshot unexpectedly observed later import as %q", got)
+	}
+	tr.cachedTypeResolver = tr.buildTypeResolver()
+	if got, ok := tr.tryResolveSimpleName("Other", exists); !ok || got != "b.Other" {
+		t.Fatalf("rebuilt resolver = %q, %v; want b.Other, true", got, ok)
+	}
+}
+
+func TestTypeNameMemoIsBuildLocal(t *testing.T) {
+	tr := NewGalaASTTransformer().(*galaASTTransformer)
+	tr.packageName = "main"
+	tr.importManager = NewImportManager()
+	tr.importManager.Add("example.com/a", "", true, "a")
+	tr.typeMetas = make(map[string]*transpiler.TypeMetadata)
+
+	memo := make(map[string]string)
+	if got := tr.normalizeTypeNameMemoized("Thing", memo); got != "Thing" {
+		t.Fatalf("initial normalization = %q, want Thing", got)
+	}
+	tr.typeMetas["a.Thing"] = &transpiler.TypeMetadata{Name: "Thing"}
+	if got := tr.normalizeTypeNameMemoized("Thing", memo); got != "Thing" {
+		t.Fatalf("memoized normalization = %q, want Thing", got)
+	}
+	if got := tr.normalizeTypeNameMemoized("Thing", make(map[string]string)); got != "a.Thing" {
+		t.Fatalf("fresh normalization = %q, want a.Thing", got)
+	}
+}

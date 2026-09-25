@@ -1601,9 +1601,9 @@ compare_baseline() {
         next
       }
       FNR > 1 && $9 == 0 {
-        match = baseline[$2] == $5 ? "yes" : "no"
-        if (match == "no") mismatch++
-        printf "%s\t%s\t%s\t%s\n", $2, baseline[$2], $5, match
+        matched = baseline[$2] == $5 ? "yes" : "no"
+        if (matched == "no") mismatch++
+        printf "%s\t%s\t%s\t%s\n", $2, baseline[$2], $5, matched
       }
       END { if (mismatch > 0) exit 3 }
     ' "$baseline_manifest" "$OUTPUT_MANIFEST" > "$BASELINE_OUTPUT_COMPARISON" || {

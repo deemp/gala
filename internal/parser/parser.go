@@ -44,42 +44,58 @@ func (p *AntlrGalaParser) Parse(input string) (antlr.Tree, map[int]string, error
 // mutex-protected DFA set (built once) so DFA state is still reused across
 // files. The deserialized ATN stays shared too (it is read-mostly and guards
 // its own lazily-cached token sets with a mutex).
-func (p *AntlrGalaParser) ParseLenient(input string) (antlr.Tree, map[int]string, []error) {
-	// Drop a leading UTF-8 BOM once, up front: the lexer has no rule for
-	// U+FEFF and would otherwise reject the file outright. Go, which GALA
-	// transpiles to, ignores a leading BOM the same way.
-	input = galaerr.StripBOM(input)
+type sourceFileParseResult struct {
+	input  *antlr.InputStream
+	tree   antlr.Tree
+	docs   map[int]string
+	errors []error
+}
 
+func parseSourceFileAttempt(input string, mode int, collectDocs bool) sourceFileParseResult {
 	is := antlr.NewInputStream(input)
 	lexer := grammar.NewgalaLexer(is)
 	isolateLexerCaches(lexer.BaseLexer)
 	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
 	parser := grammar.NewgalaParser(stream)
 	isolateParserCaches(parser.BaseParser)
+	parser.GetInterpreter().SetPredictionMode(mode)
 
 	errorListener := &GalaErrorListener{}
-
 	lexer.RemoveErrorListeners()
 	lexer.AddErrorListener(errorListener)
-
 	parser.RemoveErrorListeners()
 	parser.AddErrorListener(errorListener)
 
 	tree := parser.SourceFile()
-
-	// Harvest doc comments off the hidden channel. The parse has already
-	// materialized these tokens, so this is a linear walk with no extra lexing;
-	// Fill is a no-op once a complete parse has consumed the stream.
 	stream.Fill()
-	docs := extractDocComments(stream.GetAllTokens())
 
-	var errs []error
-	errs = append(errs, errorListener.Errors...)
-	if err := p.checkEmptyLines(is, tree); err != nil {
+	var docs map[int]string
+	if collectDocs {
+		docs = extractDocComments(stream.GetAllTokens())
+	}
+
+	return sourceFileParseResult{
+		input:  is,
+		tree:   tree,
+		docs:   docs,
+		errors: errorListener.Errors,
+	}
+}
+
+func (p *AntlrGalaParser) ParseLenient(input string) (antlr.Tree, map[int]string, []error) {
+	input = galaerr.StripBOM(input)
+
+	result := parseSourceFileAttempt(input, antlr.PredictionModeSLL, true)
+	if len(result.errors) != 0 || result.tree == nil {
+		result = parseSourceFileAttempt(input, antlr.PredictionModeLL, true)
+	}
+
+	errs := append([]error(nil), result.errors...)
+	if err := p.checkEmptyLines(result.input, result.tree); err != nil {
 		errs = append(errs, err)
 	}
 
-	return tree, docs, errs
+	return result.tree, result.docs, errs
 }
 
 // ParseExpression parses a single GALA expression (not a whole source file)

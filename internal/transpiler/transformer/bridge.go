@@ -11,11 +11,9 @@ import (
 // normalizeTypeName resolves an unqualified type name to its fully qualified form
 // using the import resolution mechanism. Types already qualified are returned as-is.
 func (t *galaASTTransformer) normalizeTypeName(name string) string {
-	// If already qualified (contains a dot), return as-is
 	if strings.Contains(name, ".") {
 		return name
 	}
-	// Use the unified type resolution mechanism
 	resolvedType := t.getType(name)
 	if !resolvedType.IsNil() {
 		return resolvedType.String()
@@ -23,40 +21,60 @@ func (t *galaASTTransformer) normalizeTypeName(name string) string {
 	return name
 }
 
-// toInferType converts a transpiler.Type to an infer.Type
+func (t *galaASTTransformer) normalizeTypeNameMemoized(name string, memo map[string]string) string {
+	if memo != nil {
+		if resolved, ok := memo[name]; ok {
+			return resolved
+		}
+	}
+	resolved := t.normalizeTypeName(name)
+	if memo != nil {
+		memo[name] = resolved
+	}
+	return resolved
+}
+
 func (t *galaASTTransformer) toInferType(typ transpiler.Type) infer.Type {
+	return t.toInferTypeMemoized(typ, nil)
+}
+
+func (t *galaASTTransformer) toInferTypeMemoized(typ transpiler.Type, normalizedNames map[string]string) infer.Type {
 	if transpiler.IsUnusable(typ) {
 		return &infer.TypeConst{Name: "any"}
 	}
 
 	switch v := typ.(type) {
 	case transpiler.BasicType:
-		return &infer.TypeConst{Name: t.normalizeTypeName(v.Name)}
+		return &infer.TypeConst{Name: t.normalizeTypeNameMemoized(v.Name, normalizedNames)}
 	case transpiler.NamedType:
-		return &infer.TypeConst{Name: t.normalizeTypeName(v.String())}
+		return &infer.TypeConst{Name: t.normalizeTypeNameMemoized(v.String(), normalizedNames)}
 	case transpiler.GenericType:
 		params := make([]infer.Type, len(v.Params))
 		for i, p := range v.Params {
-			params[i] = t.toInferType(p)
+			params[i] = t.toInferTypeMemoized(p, normalizedNames)
 		}
-		return &infer.TypeApp{Name: t.normalizeTypeName(v.Base.String()), Args: params}
+		return &infer.TypeApp{Name: t.normalizeTypeNameMemoized(v.Base.String(), normalizedNames), Args: params}
 	case transpiler.ArrayType:
-		return &infer.TypeApp{Name: "[]", Args: []infer.Type{t.toInferType(v.Elem)}}
+		return &infer.TypeApp{Name: "[]", Args: []infer.Type{t.toInferTypeMemoized(v.Elem, normalizedNames)}}
 	case transpiler.PointerType:
-		return &infer.TypeApp{Name: "*", Args: []infer.Type{t.toInferType(v.Elem)}}
+		return &infer.TypeApp{Name: "*", Args: []infer.Type{t.toInferTypeMemoized(v.Elem, normalizedNames)}}
 	case transpiler.MapType:
-		return &infer.TypeApp{Name: "map", Args: []infer.Type{t.toInferType(v.Key), t.toInferType(v.Elem)}}
+		return &infer.TypeApp{Name: "map", Args: []infer.Type{
+			t.toInferTypeMemoized(v.Key, normalizedNames),
+			t.toInferTypeMemoized(v.Elem, normalizedNames),
+		}}
 	case transpiler.FuncType:
-		// Curried function type: (a, b) -> r  becomes  a -> (b -> r)
 		var res infer.Type
 		if len(v.Results) > 0 {
-			res = t.toInferType(v.Results[0])
+			res = t.toInferTypeMemoized(v.Results[0], normalizedNames)
 		} else {
-			// Void function returns unit
 			res = &infer.TypeConst{Name: "unit"}
 		}
 		for i := len(v.Params) - 1; i >= 0; i-- {
-			res = &infer.TypeApp{Name: "->", Args: []infer.Type{t.toInferType(v.Params[i]), res}}
+			res = &infer.TypeApp{Name: "->", Args: []infer.Type{
+				t.toInferTypeMemoized(v.Params[i], normalizedNames),
+				res,
+			}}
 		}
 		return res
 	case transpiler.VoidType:
@@ -231,39 +249,35 @@ func (t *galaASTTransformer) inferIfType(cond, then, elseExpr ast.Expr) (transpi
 
 func (t *galaASTTransformer) buildTypeEnv() infer.TypeEnv {
 	env := make(infer.TypeEnv)
+	var normalizedNames map[string]string
+	if !t.traceTypeResolution {
+		normalizedNames = make(map[string]string, 32)
+	}
 
-	// Add variables from current scope
 	s := t.currentScope
 	for s != nil {
 		for name, typ := range s.valTypes {
 			if _, ok := env[name]; !ok {
-				env[name] = &infer.Scheme{Type: t.toInferType(typ)}
+				env[name] = &infer.Scheme{Type: t.toInferTypeMemoized(typ, normalizedNames)}
 			}
 		}
 		s = s.parent
 	}
 
-	// Add functions from RichAST
 	for name, meta := range t.functions {
-		// Convert FunctionMetadata to a function type
-		funcType := t.toInferType(transpiler.FuncType{
+		funcType := t.toInferTypeMemoized(transpiler.FuncType{
 			Params:  meta.ParamTypes,
 			Results: []transpiler.Type{meta.ReturnType},
-		})
+		}, normalizedNames)
 
-		// If there are type parameters, we need to convert them to type variables in the HM system
-		// and generalize the scheme.
 		if len(meta.TypeParams) > 0 {
-			// Map from type param name to type variable
 			tvMap := make(map[string]*infer.TypeVariable)
 			for _, tp := range meta.TypeParams {
 				tvMap[tp] = t.inferer.NewTypeVar()
 			}
 
-			// Substitute type constants with type variables
 			funcType = t.substituteTypeParams(funcType, tvMap)
 
-			// Generalize (quantify all type variables we just created)
 			var vars []*infer.TypeVariable
 			for _, tv := range tvMap {
 				vars = append(vars, tv)
