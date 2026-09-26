@@ -71,6 +71,20 @@ jobs:
     # prediction, which is where the reported crashes lived. A filtered job
     # would re-open the blind spot this one exists to close.
     #
+    # The LSP is here because the language server is the heaviest concurrent
+    # consumer of the shared ANTLR parser in the tree, and nothing covered that
+    # before; the rationale is in internal/lsp/concurrent_analysis_test.go, and
+    # the first run of this job found a real race there. All three targets run
+    # whole.
+    #
+    # Known weakness, recorded rather than tolerated: parts of the LSP suite
+    # assert on analysis results after a fixed time.Sleep (one budgets 300ms for
+    # a 300ms debounce plus a full parse, analyse and transform). Instrumentation
+    # is exactly what those budgets cannot absorb. If one goes red here, the fix
+    # is to make that test wait on a condition — ClearDiagnostics then
+    # WaitForDiagnostics, as the concurrency test does — not to retry the job or
+    # narrow this one. A red nobody is allowed to act on is not a gate.
+    #
     # //internal/transpiler/transformer is deliberately NOT here. Under -race
     # it dies with `fatal error: traceback` /
     # `unexpected SPWRITE function runtime.systemstack`, reproducibly, ~7
@@ -113,6 +127,7 @@ jobs:
           bazel test \
             //internal/parser:parser_test \
             //internal/transpiler/analyzer:analyzer_test \
+            //internal/lsp:lsp_test \
             --@rules_go//go/config:race \
             --test_timeout=1800 \
             --test_output=errors --verbose_failures \
