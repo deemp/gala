@@ -152,3 +152,10 @@ bazel_test_fixtures/**/*.gen.go
 # .bazelrc. Machine-specific paths (e.g. --disk_cache) belong here, never
 # in the checked-in .bazelrc.
 .bazelrc.user
+
+# Nix build/dev-shell outputs (`nix build`, `nix develop` result symlinks).
+/result
+/result-*
+
+# directory used by direnv
+.direnv

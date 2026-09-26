@@ -342,12 +342,14 @@ func runWorkerTranspilePackage(argv []string, out io.Writer) int {
 		search  string
 		goroot  string
 		goSrc   string
+		scan    bool
 	)
 	fs.StringVar(&inputs, "inputs", "", "")
 	fs.StringVar(&outputs, "outputs", "", "")
 	fs.StringVar(&search, "search", ".", "")
 	fs.StringVar(&goroot, "goroot", "", "")
 	fs.StringVar(&goSrc, "go-src", "", "")
+	fs.BoolVar(&scan, "scan", false, "")
 	if err := fs.Parse(argv); err != nil {
 		fmt.Fprintf(out, "transpile-package: parse flags: %v\n", err)
 		return 1
@@ -393,13 +395,19 @@ func runWorkerTranspilePackage(argv []string, out io.Writer) int {
 
 		// Set siblings for THIS file. SetPackageFiles also resets
 		// checkedDirs so per-file directory scanning starts fresh.
-		var packageFiles []string
-		for j, other := range inList {
-			if j != i {
-				packageFiles = append(packageFiles, other)
+		// With --scan, siblings come from the directory scan instead
+		// (and files outside inList are visible).
+		if scan {
+			batch.SetPackageFiles(nil)
+		} else {
+			var packageFiles []string
+			for j, other := range inList {
+				if j != i {
+					packageFiles = append(packageFiles, other)
+				}
 			}
+			batch.SetPackageFiles(packageFiles)
 		}
-		batch.SetPackageFiles(packageFiles)
 
 		tr := transformer.NewGalaASTTransformer()
 		g := generator.NewGoCodeGenerator()

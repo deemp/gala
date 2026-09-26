@@ -1,12 +1,16 @@
 // gala_bootstrap is a minimal transpiler used for bootstrapping.
-// It transpiles GALA to Go without any stdlib embedding features.
-// Used internally to generate stdlib Go files, breaking the dependency cycle.
+// It transpiles GALA to Go without any stdlib embedding features. Unlike
+// cmd/gala it does not import internal/stdlib, so it can be built from the
+// same tree whose stdlib it transpiles: Bazel uses it to generate the stdlib
+// Go files that the full transpiler embeds, and nix/gala.nix uses it as the
+// useLocalBootstrap escape hatch.
 package main
 
 import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"martianoff/gala/internal/transpiler"
@@ -18,6 +22,8 @@ import (
 func main() {
 	input := flag.String("input", "", "Input .gala file")
 	output := flag.String("output", "", "Output .go file")
+	inputs := flag.String("inputs", "", "Comma-separated input .gala files (batch mode, alternative to -input)")
+	outputs := flag.String("outputs", "", "Comma-separated output .go files, same order as -inputs")
 	search := flag.String("search", ".", "Comma-separated search paths")
 	packageFiles := flag.String("package-files", "", "Comma-separated list of sibling .gala files in the same package")
 	goroot := flag.String("goroot", "", "Path to Go SDK root (for Go type inference)")
@@ -26,6 +32,24 @@ func main() {
 	// Set GOROOT for Go type inference if provided
 	if *goroot != "" {
 		os.Setenv("GOROOT", *goroot)
+	}
+
+	paths := strings.Split(*search, ",")
+
+	if *inputs != "" {
+		if *input != "" || *output != "" {
+			fmt.Fprintln(os.Stderr, "Error: -inputs/-outputs cannot be combined with -input/-output")
+			os.Exit(1)
+		}
+		if *packageFiles != "" {
+			fmt.Fprintln(os.Stderr, "Error: -inputs/-outputs cannot be combined with -package-files")
+			os.Exit(1)
+		}
+		if err := runBatch(strings.Split(*inputs, ","), strings.Split(*outputs, ","), paths); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	if *input == "" {
@@ -39,7 +63,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	paths := strings.Split(*search, ",")
 	p := transpiler.NewAntlrGalaParser()
 	var a transpiler.Analyzer
 	if *packageFiles != "" {
@@ -66,4 +89,46 @@ func main() {
 	} else {
 		fmt.Print(goCode)
 	}
+}
+
+func runBatch(inList, outList, paths []string) error {
+	if len(inList) != len(outList) {
+		return fmt.Errorf("number of inputs (%d) != outputs (%d)", len(inList), len(outList))
+	}
+
+	p := transpiler.NewAntlrGalaParser()
+	a := analyzer.NewBatchAnalyzer(p, paths)
+
+	for i, in := range inList {
+		content, err := os.ReadFile(in)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", in, err)
+		}
+
+		// Pass no explicit package files: that would replace the analyzer's
+		// directory scan rather than add to it, hiding same-directory .gala
+		// files that are not in inList. Clearing also resets checkedDirs, so
+		// each file gets a fresh scan. This matches Bazel, which passes no
+		// explicit list at all.
+		a.SetPackageFiles(nil)
+
+		tr := transformer.NewGalaASTTransformer()
+		g := generator.NewGoCodeGenerator()
+		t := transpiler.NewGalaToGoTranspiler(p, a, tr, g)
+
+		goCode, err := t.Transpile(string(content), in)
+		if err != nil {
+			return fmt.Errorf("%s: %w", in, err)
+		}
+
+		if dir := filepath.Dir(outList[i]); dir != "." {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("creating %s: %w", dir, err)
+			}
+		}
+		if err := os.WriteFile(outList[i], []byte(goCode), 0644); err != nil {
+			return fmt.Errorf("writing %s: %w", outList[i], err)
+		}
+	}
+	return nil
 }

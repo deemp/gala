@@ -45,6 +45,33 @@ which automatically downloads the correct Bazel version.
 
 The binary will be at `bazel-bin/cmd/gala/gala_/gala` (or `gala.exe` on Windows).
 
+### Nix (optional)
+
+[`flake.nix`](flake.nix) provides the same toolchain for a reproducible
+environment:
+
+```bash
+nix develop       # shell with bazelisk, go, jdk21
+direnv allow      # with direnv: enter the shell automatically on cd
+```
+
+`nix build .#gala` builds the CLI from source. The stdlib is transpiled by
+the released `gala` binary pinned in [`nix/gala.nix`](nix/gala.nix)
+(`galaReleaseVersion` and its four asset hashes). Releases can lag the tree
+(codegen or grammar changes), so for local transpiler or grammar work use the
+escape hatch, which builds `cmd/gala_bootstrap` from this tree instead:
+
+```bash
+nix build .#gala-local
+```
+
+The flake covers `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and
+`aarch64-darwin`.
+
+> **NixOS:** the dev shell provides `bazel` via Bazelisk, which downloads a
+> dynamically linked Bazel. On NixOS that binary needs `nix-ld` or an FHS
+> wrapper; on macOS and non-NixOS Linux it runs as-is.
+
 ## Running Tests
 
 All testing is done through Bazel:

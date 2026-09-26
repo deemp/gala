@@ -133,3 +133,40 @@ filegroup(
     ],
     visibility = ["//visibility:public"],
 )
+
+# Inputs for the bootstrap transpiler: the same stdlib sources as
+# all_gala_sources minus //examples, so editing an example does not
+# invalidate every stdlib transpile action. Consumed by
+# //tools/toolchain:gala_bootstrap_toolchain_impl.
+filegroup(
+    name = "bootstrap_gala_sources",
+    srcs = [
+        "//collection_immutable:gala_sources",
+        "//collection_mutable:gala_sources",
+        "//concurrent:gala_sources",
+        "//crypto:gala_sources",
+        "//fs:gala_sources",
+        "//io:gala_sources",
+        "//json:gala_sources",
+        "//lazy:lazy.gala",
+        "//path:gala_sources",
+        "//regex:gala_sources",
+        "//std:constptr.gala",
+        "//std:either.gala",
+        "//std:errors.gala",
+        "//std:hashable.gala",
+        "//std:immutable.gala",
+        "//std:iterable.gala",
+        "//std:meta.gala",
+        "//std:option.gala",
+        "//std:ordered.gala",
+        "//std:seq.gala",
+        "//std:try.gala",
+        "//std:tuple.gala",
+        "//stream:stream.gala",
+        "//strings:gala_sources",
+        "//time_utils:gala_sources",
+        "//validation:gala_sources",
+    ],
+    visibility = ["//visibility:public"],
+)

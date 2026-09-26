@@ -33,10 +33,13 @@ toolchain(
     visibility = ["//visibility:public"],
 )
 
+# The bootstrap runs on the tree's own sources; //:bootstrap_gala_sources
+# drops //examples so editing an example does not invalidate every stdlib
+# transpile action.
 gala_bootstrap_toolchain(
     name = "gala_bootstrap_toolchain_impl",
     gala_bootstrap = "//cmd/gala_bootstrap",
-    all_gala_sources = "//:all_gala_sources",
+    all_gala_sources = "//:bootstrap_gala_sources",
     go_mod = "//:go.mod",
     visibility = ["//visibility:public"],
 )

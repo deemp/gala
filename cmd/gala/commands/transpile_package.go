@@ -21,6 +21,7 @@ var (
 	tpOutputs string
 	tpSearch  string
 	tpGoroot  string
+	tpScan    bool
 )
 
 var transpilePackageCmd = &cobra.Command{
@@ -30,10 +31,20 @@ var transpilePackageCmd = &cobra.Command{
 invocation. This shares the analyzer cache across files, avoiding redundant
 re-analysis of imports (std, collection_immutable, etc.).
 
+By default every --inputs file is treated as a sibling of every other --inputs
+file. Use --scan to instead let the analyzer discover siblings by scanning the
+input's directory, which also sees .gala files that were not listed in
+--inputs.
+
 Example:
   gala transpile-package \
     --inputs types.gala,request.gala,response.gala \
     --outputs types.gen.go,request.gen.go,response.gen.go \
+    --search /path/to/gala
+
+  gala transpile-package --scan \
+    --inputs a.gala,b.gala \
+    --outputs a.gen.go,b.gen.go \
     --search /path/to/gala`,
 	Run: runTranspilePackage,
 }
@@ -43,6 +54,7 @@ func init() {
 	transpilePackageCmd.Flags().StringVar(&tpOutputs, "outputs", "", "Comma-separated list of output .go files (same order as inputs)")
 	transpilePackageCmd.Flags().StringVarP(&tpSearch, "search", "s", ".", "Comma-separated search paths")
 	transpilePackageCmd.Flags().StringVar(&tpGoroot, "goroot", "", "Path to Go SDK root (for Go type inference)")
+	transpilePackageCmd.Flags().BoolVar(&tpScan, "scan", false, "Discover sibling .gala files by directory scan instead of treating every --inputs entry as a sibling")
 }
 
 func runTranspilePackage(cmd *cobra.Command, args []string) {
@@ -61,17 +73,34 @@ func runTranspilePackage(cmd *cobra.Command, args []string) {
 	inputs := strings.Split(tpInputs, ",")
 	outputs := strings.Split(tpOutputs, ",")
 
-	if len(inputs) != len(outputs) {
-		fmt.Fprintf(os.Stderr, "Error: number of inputs (%d) != outputs (%d)\n", len(inputs), len(outputs))
+	if err := transpilePackage(inputs, outputs, tpSearch, tpGoroot, tpScan); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
 
-	if tpGoroot != "" {
-		os.Setenv("GOROOT", tpGoroot)
+// transpilePackage transpiles each inputs[i] to outputs[i] using a single
+// shared parser and batch analyzer.
+//
+// Sibling resolution:
+//   - scan=false: every other inputs entry is a sibling of inputs[i]. This is
+//     the original behavior and is appropriate when the caller has the full
+//     package file list (e.g. Bazel's package_files).
+//   - scan=true: the analyzer discovers siblings by scanning the input's
+//     directory, resetting its checkedDirs per file. This sees .gala files
+//     that are not listed in inputs (e.g. reserved names such as retry.gala)
+//     and matches gala_bootstrap's batch mode and Bazel's directory scan.
+func transpilePackage(inputs, outputs []string, search, goroot string, scan bool) error {
+	if len(inputs) != len(outputs) {
+		return fmt.Errorf("number of inputs (%d) != outputs (%d)", len(inputs), len(outputs))
+	}
+
+	if goroot != "" {
+		os.Setenv("GOROOT", goroot)
 	}
 
 	// Build search paths
-	paths := strings.Split(tpSearch, ",")
+	paths := strings.Split(search, ",")
 	if len(inputs) > 0 {
 		paths = autoResolveSearchPaths(inputs[0], paths)
 	}
@@ -83,25 +112,31 @@ func runTranspilePackage(cmd *cobra.Command, args []string) {
 	summary := profiler.NewSummary()
 	batchStart := time.Now()
 
-	hasError := false
+	failed := 0
 	for i, inputPath := range inputs {
 		outputPath := outputs[i]
 
 		content, err := os.ReadFile(inputPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading %s: %v\n", inputPath, err)
-			hasError = true
+			failed++
 			continue
 		}
 
-		// Build package-files list: all other inputs are siblings
-		var packageFiles []string
-		for j, other := range inputs {
-			if j != i {
-				packageFiles = append(packageFiles, other)
+		if scan {
+			// Directory scan for siblings; nil also resets checkedDirs so
+			// each file starts from a fresh scan.
+			batchAnalyzer.SetPackageFiles(nil)
+		} else {
+			// Build package-files list: all other inputs are siblings
+			var packageFiles []string
+			for j, other := range inputs {
+				if j != i {
+					packageFiles = append(packageFiles, other)
+				}
 			}
+			batchAnalyzer.SetPackageFiles(packageFiles)
 		}
-		batchAnalyzer.SetPackageFiles(packageFiles)
 
 		tr := transformer.NewGalaASTTransformer()
 		g := generator.NewGoCodeGenerator()
@@ -110,7 +145,7 @@ func runTranspilePackage(cmd *cobra.Command, args []string) {
 		goCode, err := t.Transpile(string(content), inputPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error transpiling %s: %v\n", inputPath, err)
-			hasError = true
+			failed++
 			continue
 		}
 
@@ -123,7 +158,7 @@ func runTranspilePackage(cmd *cobra.Command, args []string) {
 		err = os.WriteFile(outputPath, []byte(goCode), 0644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", outputPath, err)
-			hasError = true
+			failed++
 			continue
 		}
 	}
@@ -133,7 +168,8 @@ func runTranspilePackage(cmd *cobra.Command, args []string) {
 	}
 	summary.Report()
 
-	if hasError {
-		os.Exit(1)
+	if failed > 0 {
+		return fmt.Errorf("%d of %d files failed to transpile", failed, len(inputs))
 	}
+	return nil
 }
