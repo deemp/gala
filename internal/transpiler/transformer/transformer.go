@@ -342,6 +342,13 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	if err := t.importManager.ValidateDotImports(richAST, importLine, importCol); err != nil {
 		return nil, nil, err
 	}
+	// Order matters here, though not for the revision check:
+	// registerDotImportedVals only reads the import manager and writes the
+	// current scope, so it cannot invalidate the snapshot below. It still
+	// belongs first, because cacheTypeResolver snapshots name resolution
+	// against the import set and is meant to be taken once every
+	// import-derived setup step has run.
+	t.registerDotImportedVals()
 	t.cacheTypeResolver()
 
 	for _, topDeclCtx := range sourceFile.AllTopLevelDeclaration() {

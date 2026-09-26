@@ -304,6 +304,16 @@ func main() {
 
 Unwrapping is based on the inferred type name. If the type name starts with `Immutable[` or `std.Immutable[`, it is considered unwrappable.
 
+### 3. Package-Level Bindings Across Files and Packages
+The transformer only sees the declarations of the file it is transforming, so the analyzer records every package-level `val`/`var` (`RichAST.PackageVals`) with its val/var classification and element type:
+
+- **Same package, other file** — the transformer pre-registers the package's bindings in the global scope, so a bare reference unwraps exactly like a same-file one.
+- **Another package** — `RichAST.Merge` carries an imported package's *exported* bindings as `RichAST.ImportedVals`, keyed by package-qualified name (`colors.Green`). They never enter the importer's own `PackageVals`. A selector `colors.Green` (or `c.Green` through an import alias) whose package declares a `val` becomes `colors.Green.Get()`; a `var` is left as written. Under a dot-import the bindings are registered by bare name, after the current package's own. Reassigning or incrementing an imported `val` is rejected.
+
+The element type is read from an explicit annotation, or from the initializer when its shape settles it without full expression inference: a literal, a reference to another package-level binding, or a non-generic call — a companion's `Apply` result (so `val Green = NamedColor(2)` is the sealed parent `Color`), a struct's own type, or a function's declared return type. Otherwise the type is unknown: the unwrap is still emitted (it needs only the val/var classification), but downstream inference has less to go on, e.g. which fields of a struct-typed val are themselves `Immutable`.
+
+The on-disk analysis cache persists each package's own `PackageVals`, so the same metadata reaches an importer whether the package was analyzed fresh or served from the cache, by the CLI builder or the Bazel worker.
+
 ---
 
 ## Type Resolution
@@ -342,10 +352,10 @@ The `getType(name)` method in scope.go implements this resolution order.
 | `arr[i]` | Array element type |
 | `Some(x)`, `None[T]()` | Option type construction |
 | `Left(x)`, `Right(x)` | Either type construction |
-| `expr.Get()` | Immutable inner type, generic container element (`Array[T].Get()` → `T`), or — when the receiver is a non-generic named type with a user-declared `Get` method — that method's declared return type |
+| `expr.Get()` | Immutable inner type, generic container element (`Array[T].Get()` → `T`), or — when the receiver is a non-generic named type (or a pointer to one) with a user-declared `Get` method — that method's declared return type |
 | `NewImmutable(x)` | Immutable wrapper type |
 
-> **Note:** `Get` is special-cased because it backs implicit `Immutable` unwrapping and the built-in container accessors. A user type may still declare its own `Get` method (e.g. a `Get() Option[T]` accessor); its declared return type is honored so that chained higher-order calls on the result (`expr.Get().FlatMap(...)`, `.Map(...)`) keep their concrete element type instead of widening to `any`.
+> **Note:** `Get` is special-cased because it backs implicit `Immutable` unwrapping and the built-in container accessors. A user type may still declare its own `Get` method (e.g. a `Get() Option[T]` accessor); its declared return type is honored so that chained higher-order calls on the result (`expr.Get().FlatMap(...)`, `.Map(...)`) keep their concrete element type instead of widening to `any`. Pointer receivers (`func (b *Buffer) Get() Cell`) resolve the same way, so field chains on the result (`b.Get().St.Bold`) unwrap each immutable field.
 
 ### Hindley-Milner Inference (`inferExprType`)
 

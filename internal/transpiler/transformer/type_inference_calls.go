@@ -52,6 +52,20 @@ func (t *galaASTTransformer) inferSelectorExprType(e *ast.SelectorExpr) transpil
 			// Check if this is a Go constant or variable (not a type)
 			// e.g., runtime.GOOS is a string constant, not a type
 			qualName := pkgName + "." + e.Sel.Name
+			// A package-level binding of an imported GALA package: a `var` is
+			// its element type, a `val` the std.Immutable[T] it lowers to
+			// (resolveFieldAccess reads it through .Get()). An unknown element
+			// type stays unknown rather than falling through to the NamedType
+			// guess below, which would claim the binding is a type.
+			if pv := t.importedPackageVal(x.Name, e.Sel.Name); pv != nil {
+				if !pv.IsVal || transpiler.IsUnusable(pv.Type) {
+					return pv.Type
+				}
+				return transpiler.GenericType{
+					Base:   transpiler.NamedType{Package: registry.StdPackageName, Name: transpiler.TypeImmutable},
+					Params: []transpiler.Type{pv.Type},
+				}
+			}
 			// A bare reference to a function in another GALA package
 			// (e.g. `helper.Shout` passed to Array.Map). The same-package
 			// form is resolved from FunctionMetadata in the *ast.Ident case
@@ -620,6 +634,14 @@ func (t *galaASTTransformer) inferGetMethodType(e *ast.CallExpr, sel *ast.Select
 			xType = t.getType(id.Name)
 		}
 	}
+	// `pkg.Name.Get()` reading an imported package-level val: the .Get()
+	// unwraps the val's Immutable wrapper, so it yields the element type.
+	if pkgSel, ok := sel.X.(*ast.SelectorExpr); ok {
+		if pv, ok := t.importedValSelector(pkgSel); ok {
+			isVal = true
+			xType = pv.Type
+		}
+	}
 	// Check if sel.X is an immutable struct field access (e.g., c.value where value is an immutable field)
 	// In this case, the .Get() is unwrapping the implicit Immutable wrapper,
 	// and xType from getExprTypeNameManual will be the declared field type (e.g., Option[int])
@@ -694,11 +716,17 @@ func (t *galaASTTransformer) inferGetMethodType(e *ast.CallExpr, sel *ast.Select
 	// receiver type instead of Option, producing an undefined monomorphized helper).
 	// The generic-type branches above already handle generic receivers with
 	// substitution, so this only fills the non-generic named-type gap.
+	// Pointer receivers: methods are registered under the element type's name,
+	// so *T's methods are looked up via T.
 	if !transpiler.IsUnusable(xType) {
-		if typeMeta := t.getTypeMeta(xBaseName); typeMeta != nil {
-			if methodMeta, ok := typeMeta.Methods[sel.Sel.Name]; ok {
-				return methodMeta.ReturnType
+		receiverName := xBaseName
+		if ptr, ok := xType.(transpiler.PointerType); ok {
+			if _, isGeneric := ptr.Elem.(transpiler.GenericType); !isGeneric {
+				receiverName = ptr.Elem.BaseName()
 			}
+		}
+		if result := t.resolveMethodCallType(receiverName, sel.Sel.Name, nil, e.Args, -1); !result.IsNil() {
+			return result
 		}
 	}
 	if xType == nil {
