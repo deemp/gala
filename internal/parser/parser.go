@@ -27,8 +27,9 @@ func (p *AntlrGalaParser) Parse(input string) (antlr.Tree, map[int]string, error
 	return tree, docs, nil
 }
 
-// ParseLenient always returns ANTLR's error-recovered tree alongside any
-// syntax errors. The tree contains error nodes but is structurally valid.
+// parseSourceFileAttempt parses input once under the given ANTLR prediction
+// mode and returns the tree, any syntax errors, and the token stream the doc
+// comments can be harvested from.
 //
 // Concurrency: the ANTLR-generated NewgalaLexer/NewgalaParser constructors
 // hand every instance the same package-global ATN simulator state — the
@@ -47,11 +48,11 @@ func (p *AntlrGalaParser) Parse(input string) (antlr.Tree, map[int]string, error
 type sourceFileParseResult struct {
 	input  *antlr.InputStream
 	tree   antlr.Tree
-	docs   map[int]string
+	tokens []antlr.Token
 	errors []error
 }
 
-func parseSourceFileAttempt(input string, mode int, collectDocs bool) sourceFileParseResult {
+func parseSourceFileAttempt(input string, mode int) sourceFileParseResult {
 	is := antlr.NewInputStream(input)
 	lexer := grammar.NewgalaLexer(is)
 	isolateLexerCaches(lexer.BaseLexer)
@@ -67,35 +68,57 @@ func parseSourceFileAttempt(input string, mode int, collectDocs bool) sourceFile
 	parser.AddErrorListener(errorListener)
 
 	tree := parser.SourceFile()
-	stream.Fill()
 
-	var docs map[int]string
-	if collectDocs {
-		docs = extractDocComments(stream.GetAllTokens())
-	}
+	// Buffer the whole stream so the doc comments are reachable. The parse
+	// has already materialized these tokens, so this is a linear walk with no
+	// extra lexing; Fill is a no-op once a complete parse has consumed it.
+	stream.Fill()
 
 	return sourceFileParseResult{
 		input:  is,
 		tree:   tree,
-		docs:   docs,
+		tokens: stream.GetAllTokens(),
 		errors: errorListener.Errors,
 	}
 }
 
+// ParseLenient always returns ANTLR's error-recovered tree alongside any
+// syntax errors. The tree contains error nodes but is structurally valid.
+//
+// Input is parsed twice when it does not parse cleanly: once with SLL
+// prediction, and, if that attempt reported any syntax error, again from the
+// start with full LL prediction. SLL is the cheaper prediction mode and the
+// grammar accepts nearly everything under it, so the common case pays for one
+// attempt; input that is mid-edit and syntactically invalid pays for two. That
+// is the LSP's hot path, where invalid input is the normal state rather than the
+// exception.
+//
+// The two attempts are independent: each builds its own lexer, parser and
+// prediction-context cache, so a failed attempt leaves no state behind for the
+// retry (see parseSourceFileAttempt). Diagnostics are reported from the
+// retained attempt only, so the errors a caller sees are the LL ones and are
+// unchanged from a single full-prediction parse.
 func (p *AntlrGalaParser) ParseLenient(input string) (antlr.Tree, map[int]string, []error) {
+	// Drop a leading UTF-8 BOM once, up front: the lexer has no rule for
+	// U+FEFF and would otherwise reject the file outright. Go, which GALA
+	// transpiles to, ignores a leading BOM the same way.
 	input = galaerr.StripBOM(input)
 
-	result := parseSourceFileAttempt(input, antlr.PredictionModeSLL, true)
+	// A speculative attempt has no reason to walk its tokens for doc
+	// comments: if it is retained they are harvested below, and if it is not
+	// the LL attempt is harvested instead.
+	result := parseSourceFileAttempt(input, antlr.PredictionModeSLL)
 	if len(result.errors) != 0 || result.tree == nil {
-		result = parseSourceFileAttempt(input, antlr.PredictionModeLL, true)
+		result = parseSourceFileAttempt(input, antlr.PredictionModeLL)
 	}
+	docs := extractDocComments(result.tokens)
 
 	errs := append([]error(nil), result.errors...)
 	if err := p.checkEmptyLines(result.input, result.tree); err != nil {
 		errs = append(errs, err)
 	}
 
-	return result.tree, result.docs, errs
+	return result.tree, docs, errs
 }
 
 // ParseExpression parses a single GALA expression (not a whole source file)

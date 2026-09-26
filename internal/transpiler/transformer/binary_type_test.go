@@ -126,14 +126,22 @@ func TestCachedTypeResolverLifecycle(t *testing.T) {
 	}
 
 	tr.cachedTypeResolver = tr.buildTypeResolver()
+	epoch := tr.typeEnvEpoch
 	tr.importManager.Add("example.com/b", "", true, "b")
 	tr.typeMetas["b.Other"] = &transpiler.TypeMetadata{Name: "Other"}
-	if got, ok := tr.tryResolveSimpleName("Other", exists); ok {
-		t.Fatalf("snapshot unexpectedly observed later import as %q", got)
-	}
-	tr.cachedTypeResolver = tr.buildTypeResolver()
+	// An import added after the snapshot is the case that used to go
+	// unnoticed: bare-name resolution kept answering from the pre-import set.
+	// The transformer invalidates both caches wherever entries change, and
+	// this is that call, so the new import has to be visible afterwards.
+	tr.invalidateImportCaches()
 	if got, ok := tr.tryResolveSimpleName("Other", exists); !ok || got != "b.Other" {
-		t.Fatalf("rebuilt resolver = %q, %v; want b.Other, true", got, ok)
+		t.Fatalf("resolver after invalidation = %q, %v; want b.Other, true", got, ok)
+	}
+	if tr.cachedTypeResolver != nil {
+		t.Fatal("invalidateImportCaches left the resolver snapshot in place")
+	}
+	if tr.typeEnvEpoch == epoch {
+		t.Fatal("invalidateImportCaches did not invalidate the function environment")
 	}
 }
 

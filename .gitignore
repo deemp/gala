@@ -159,6 +159,3 @@ bazel_test_fixtures/**/*.gen.go
 
 # directory used by direnv
 .direnv
-
-# local experiment scratch (bench/profile artifacts)
-/tmp/

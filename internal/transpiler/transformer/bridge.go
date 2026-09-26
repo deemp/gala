@@ -354,6 +354,13 @@ func (t *galaASTTransformer) scopeBindingCount() int {
 // generic scheme's quantified variables a fresh variable per use, so a
 // cached scheme's variables stay an uninstantiated template no matter how
 // many runs read it.
+//
+// An environment that was built while the scope chain shadowed one of the
+// names it normalized is returned but never stored: it is right for the
+// caller that asked for it and wrong for the next caller once the shadow is
+// gone, so it must not outlive the scope it was built in. That costs reuse
+// for as long as such a binding is in scope, which degrades to the
+// uncached behaviour for that span.
 func (t *galaASTTransformer) functionTypeEnv() infer.TypeEnv {
 	if t.funcTypeEnv != nil &&
 		t.funcTypeEnvEpoch == t.typeEnvEpoch &&
@@ -362,7 +369,13 @@ func (t *galaASTTransformer) functionTypeEnv() infer.TypeEnv {
 	}
 
 	memo := &typeNameMemo{track: true}
-	if !t.traceTypeResolution {
+	if t.traceTypeResolution {
+		// Tracing records every resolution, so it must not be served from a
+		// memo, and the cache would turn a per-inference conversion into a
+		// per-file one. Build fresh and keep nothing, which is what
+		// buildTypeEnv does for the scope half.
+		memo = nil
+	} else {
 		memo.resolved = make(map[string]string, 32)
 	}
 
@@ -391,34 +404,55 @@ func (t *galaASTTransformer) functionTypeEnv() infer.TypeEnv {
 		}
 	}
 
+	// Two cases where the environment must not outlive this call.
+	//
+	// Under tracing there is nothing worth keeping: the memo is nil, and the
+	// names it would have recorded are what the shadow check below needs.
+	//
+	// The conversion above ran against the scope chain as it stands right
+	// now, so if a local binding answered one of the names it normalized,
+	// that local's type is baked into every signature mentioning the name.
+	// Caching it would hand the answer to a later caller that no longer has
+	// the shadow. Returning it uncached keeps the shadowed call correct and
+	// leaves the next call to rebuild from a clean scope.
+	if memo == nil || t.scopeShadows(memo.consulted) {
+		return env
+	}
+
 	t.funcTypeEnv = env
 	t.funcTypeEnvEpoch = t.typeEnvEpoch
 	t.funcTypeEnvNames = memo.consulted
 	return env
 }
 
-// scopeShadowsFuncTypeNames reports whether the current scope chain binds any
-// of the unqualified type names the cached function environment normalized.
-// Such a binding is the only way the cached conversion can have gone stale
-// without invalidateTypeEnv having been called: getType answers from the
-// scope before it answers from package metadata, so a local named like a type
-// in a signature resolves differently.
+// scopeShadows reports whether the current scope chain binds any of names.
+// getType answers from the scope before it answers from package metadata, so
+// a binding that collides with a name a conversion normalized is what makes
+// that conversion's answer scope-dependent.
 //
 // The scan is over the chain's bindings rather than over the name set, because
 // a chain holds a handful of bindings while the name set holds every
 // unqualified type mentioned by every signature in the file.
-func (t *galaASTTransformer) scopeShadowsFuncTypeNames() bool {
-	if len(t.funcTypeEnvNames) == 0 {
+func (t *galaASTTransformer) scopeShadows(names map[string]struct{}) bool {
+	if len(names) == 0 {
 		return false
 	}
 	for s := t.currentScope; s != nil; s = s.parent {
 		for name := range s.valTypes {
-			if _, ok := t.funcTypeEnvNames[name]; ok {
+			if _, ok := names[name]; ok {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// scopeShadowsFuncTypeNames reports whether the current scope chain binds any
+// of the unqualified type names the cached function environment normalized.
+// Such a binding is the only way the cached conversion can have gone stale
+// without invalidateTypeEnv having been called.
+func (t *galaASTTransformer) scopeShadowsFuncTypeNames() bool {
+	return t.scopeShadows(t.funcTypeEnvNames)
 }
 
 // invalidateTypeEnv marks the cached function environment stale. Every write
@@ -427,6 +461,21 @@ func (t *galaASTTransformer) scopeShadowsFuncTypeNames() bool {
 // mid-traversal rather than at Transform entry.
 func (t *galaASTTransformer) invalidateTypeEnv() {
 	t.typeEnvEpoch++
+}
+
+// invalidateImportCaches marks both caches that read the import manager stale.
+//
+// The function environment resolves unqualified names through the import
+// manager, and the resolver snapshot holds a copy of its entries, so a change
+// to the import set invalidates both. They are grouped in one function because
+// the failure mode of calling only one is a bare name that resolves against a
+// package the file no longer imports, and that is easy to miss when the two
+// invalidations sit at the end of a long function.
+//
+// Every site that adds, renames or removes an import entry must call this.
+func (t *galaASTTransformer) invalidateImportCaches() {
+	t.invalidateTypeEnv()
+	t.cachedTypeResolver = nil
 }
 
 func (t *galaASTTransformer) substituteTypeParams(typ infer.Type, tvMap map[string]*infer.TypeVariable) infer.Type {

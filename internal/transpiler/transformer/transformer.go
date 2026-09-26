@@ -325,6 +325,8 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	for path, actualPkgName := range richAST.Packages {
 		t.importManager.UpdateActualPackageName(path, actualPkgName)
 	}
+	// The renames above change the package names a bare name resolves against.
+	t.invalidateImportCaches()
 
 	// Error on symbol clashes between dot-imported packages.
 	// Use the first import declaration's position for error reporting.
@@ -511,6 +513,8 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 
 	// Remove unused imports from the generated AST.
 	t.importManager.PruneUnused(file, richAST)
+	// PruneUnused drops entries from the set the resolver snapshot copied.
+	t.invalidateImportCaches()
 
 	return fset, file, nil
 }

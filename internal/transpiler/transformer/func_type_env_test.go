@@ -1,6 +1,7 @@
 package transformer
 
 import (
+	"strings"
 	"testing"
 
 	"martianoff/gala/internal/transpiler"
@@ -97,6 +98,64 @@ func TestFunctionTypeEnvRebuildsWhenScopeShadowsANormalizedName(t *testing.T) {
 		"a local binding shadowing a normalized type name did not force a rebuild")
 	require.Equal(t, "bool", asTypeConst(t, asTypeApp(t, rebuilt["takesThing"].Type).Args[0]).Name,
 		"the rebuilt environment did not pick up the shadowing binding, which was %q", unshadowed)
+}
+
+// A build that happened while a local shadowed a normalized type name must
+// not survive the shadow: the next caller, back in a clean scope, would
+// otherwise inherit the local's type in every signature mentioning the name.
+// Before this cache existed the environment was rebuilt per call, so this is
+// the case the cache has to be careful about rather than the common one.
+func TestFunctionTypeEnvNotReusedAfterShadowEnds(t *testing.T) {
+	sig := &transpiler.FunctionMetadata{
+		ParamTypes: []transpiler.Type{transpiler.NamedType{Name: "Thing"}},
+		ReturnType: transpiler.BasicType{Name: "int"},
+	}
+
+	// The answer an unshadowed scope gives.
+	clean := funcTypeEnvFixture(t)
+	clean.functions["takesThing"] = sig
+	clean.invalidateTypeEnv()
+	want := asTypeConst(t, asTypeApp(t, clean.functionTypeEnv()["takesThing"].Type).Args[0]).Name
+
+	// The same transformer, but the first build happens under a shadow.
+	tr := funcTypeEnvFixture(t)
+	tr.functions["takesThing"] = sig
+	tr.invalidateTypeEnv()
+	tr.pushScope()
+	tr.currentScope.valTypes["Thing"] = transpiler.BasicType{Name: "bool"}
+	shadowed := asTypeConst(t, asTypeApp(t, tr.functionTypeEnv()["takesThing"].Type).Args[0]).Name
+	require.Equal(t, "bool", shadowed,
+		"the shadowed build should answer from the local binding")
+	tr.popScope()
+
+	got := asTypeConst(t, asTypeApp(t, tr.functionTypeEnv()["takesThing"].Type).Args[0]).Name
+	require.Equal(t, want, got,
+		"an environment built under a shadow was reused after the shadow was popped")
+}
+
+// Under GALA_TRACE_TYPES the environment is neither memoized nor cached, so
+// trace output keeps the per-occurrence multiplicity it had before the cache.
+func TestFunctionTypeEnvIsNeitherMemoizedNorCachedUnderTracing(t *testing.T) {
+	tr := funcTypeEnvFixture(t)
+	tr.functions["takesThing"] = &transpiler.FunctionMetadata{
+		ParamTypes: []transpiler.Type{transpiler.NamedType{Name: "Thing"}},
+		ReturnType: transpiler.BasicType{Name: "int"},
+	}
+	tr.invalidateTypeEnv()
+	tr.traceTypeResolution = true
+
+	first := tr.functionTypeEnv()
+	afterFirst := countTraceName(tr, "Thing")
+	second := tr.functionTypeEnv()
+	afterSecond := countTraceName(tr, "Thing")
+
+	require.False(t, sameTypeEnv(first, second),
+		"tracing must rebuild the environment so each resolution is recorded")
+	require.Nil(t, tr.funcTypeEnv,
+		"an environment built under tracing must not be stored for reuse")
+	require.Equal(t, 1, afterFirst, "one call should trace one resolution of Thing")
+	require.Equal(t, 2, afterSecond,
+		"the second call recorded no resolution, so traces lose per-occurrence multiplicity")
 }
 
 func TestFunctionTypeEnvStaysReusedWithoutShadowing(t *testing.T) {
@@ -208,6 +267,19 @@ func sameTypeEnv(a, b infer.TypeEnv) bool {
 
 // sameScheme is sameTypeEnv for a single entry.
 func sameScheme(a, b *infer.Scheme) bool { return a == b }
+
+// countTraceName counts recorded type-resolution events for one unqualified
+// name. getType tags each event with how it answered, so the suffix is
+// matched rather than the whole method string.
+func countTraceName(tr *galaASTTransformer, name string) int {
+	n := 0
+	for _, entry := range tr.typeTraces {
+		if strings.HasSuffix(entry.Method, ":"+name) {
+			n++
+		}
+	}
+	return n
+}
 
 // asTypeConst asserts that typ is a type constant and returns it, so the
 // assertions above read as one line. The distinction between "the const we

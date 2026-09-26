@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInfer(t *testing.T) {
@@ -134,6 +135,22 @@ func TestInfer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Apply has a fast path for an empty substitution that copies the map instead
+// of substituting into it. It still has to be a copy: infer's Let branch adds
+// the bound name to the environment it is handed, so returning the receiver
+// would leak that binding into every scope sharing the environment. This is
+// easy to undo by someone reading the fast path as a pointless copy, so the
+// property is pinned here rather than left to BenchmarkTypeEnvApplyEmpty.
+func TestTypeEnvApplyEmptyReturnsCopy(t *testing.T) {
+	env := TypeEnv{"x": {Type: &TypeConst{Name: "int"}}}
+
+	applied := env.Apply(nil)
+	applied["y"] = &Scheme{Type: &TypeConst{Name: "bool"}}
+
+	require.NotContains(t, env, "y", "Apply(empty) must not return the receiver")
+	require.Same(t, env["x"], applied["x"], "schemes are shared, the map is not")
 }
 
 var (

@@ -87,10 +87,25 @@ func NewBuilderForMode(projectDir string, stdlibVersion string, verbose bool, mo
 	}, nil
 }
 
-func timedBuildPhase(p *profiler.Profiler, label string, fn func() error) error {
+// timedBuildPhaseValue runs fn under the given profile label and returns
+// whatever fn returned.
+//
+// Timing here is a debugging aid, so a panic in fn is deliberately not
+// recovered: done() would be skipped, the phase would be reported as never
+// finished, and the crash is the more useful signal of the two.
+func timedBuildPhaseValue[T any](p *profiler.Profiler, label string, fn func() (T, error)) (T, error) {
 	done := p.Phase(label)
-	err := fn()
+	value, err := fn()
 	done()
+	return value, err
+}
+
+// timedBuildPhase is timedBuildPhaseValue for the build steps that only report
+// an error.
+func timedBuildPhase(p *profiler.Profiler, label string, fn func() error) error {
+	_, err := timedBuildPhaseValue(p, label, func() (struct{}, error) {
+		return struct{}{}, fn()
+	})
 	return err
 }
 
@@ -121,9 +136,9 @@ func (b *Builder) Build(outputPath string) (string, error) {
 	// Step 1.1: Take the workspace lock. The workspace is a single mutable
 	// tree, so a second gala process working in it would delete this build's
 	// files mid-transpile.
-	done := buildProf.Phase("workspace.lock")
-	lock, err := b.workspace.Lock(lockTimeout(workspaceLockTimeout))
-	done()
+	lock, err := timedBuildPhaseValue(buildProf, "workspace.lock", func() (*lockHandle, error) {
+		return b.workspace.Lock(lockTimeout(workspaceLockTimeout))
+	})
 	if err != nil {
 		return "", err
 	}
@@ -168,9 +183,7 @@ func (b *Builder) Build(outputPath string) (string, error) {
 	}
 
 	// Step 4.5: Decide what to build.
-	done = buildProf.Phase("build.target")
-	buildTarget, err := b.buildTarget()
-	done()
+	buildTarget, err := timedBuildPhaseValue(buildProf, "build.target", b.buildTarget)
 	if err != nil {
 		return "", err
 	}
@@ -183,9 +196,9 @@ func (b *Builder) Build(outputPath string) (string, error) {
 	}
 
 	// Step 5: Run go build (executable)
-	done = buildProf.Phase("go.build")
-	finalPath, err := b.goBuild(outputPath, buildTarget)
-	done()
+	finalPath, err := timedBuildPhaseValue(buildProf, "go.build", func() (string, error) {
+		return b.goBuild(outputPath, buildTarget)
+	})
 	if err != nil {
 		return "", fmt.Errorf("go build: %w", err)
 	}

@@ -384,7 +384,10 @@ func runWorkerTranspilePackage(argv []string, out io.Writer) int {
 		batch.SetGoSrcDirs(dirs)
 	}
 	summary := profiler.NewSummary()
-	defer summary.ReportTo(out)
+	// Profiling output goes to stderr with the per-file profiles, not to the
+	// request's own output stream, so that everything GALA_PROFILE=1 produces
+	// for a batch lands in one place.
+	defer summary.Report()
 
 	hasError := false
 	for i, inputPath := range inList {

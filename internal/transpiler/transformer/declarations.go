@@ -1369,9 +1369,10 @@ func (t *galaASTTransformer) transformImportDeclaration(ctx *grammar.ImportDecla
 		specs = append(specs, importSpec)
 	}
 	// The Adds above extend byAlias, which getType consults to resolve a
-	// qualified type name, so the cached function environment is stale once
-	// this import block has been walked.
-	t.invalidateTypeEnv()
+	// qualified type name, so the cached function environment and the
+	// resolver snapshot are both stale once this import block has been
+	// walked.
+	t.invalidateImportCaches()
 	return &ast.GenDecl{
 		Tok:   token.IMPORT,
 		Specs: specs,
