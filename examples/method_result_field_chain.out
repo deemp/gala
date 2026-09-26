@@ -1,0 +1,7 @@
+ptr var:   true true
+ptr bound: true true
+ptr val:   false true
+grid:      true false true
+value val: true true
+value var: false true
+holder:    true true

@@ -694,11 +694,17 @@ func (t *galaASTTransformer) inferGetMethodType(e *ast.CallExpr, sel *ast.Select
 	// receiver type instead of Option, producing an undefined monomorphized helper).
 	// The generic-type branches above already handle generic receivers with
 	// substitution, so this only fills the non-generic named-type gap.
+	// Pointer receivers: methods are registered under the element type's name,
+	// so *T's methods are looked up via T.
 	if !transpiler.IsUnusable(xType) {
-		if typeMeta := t.getTypeMeta(xBaseName); typeMeta != nil {
-			if methodMeta, ok := typeMeta.Methods[sel.Sel.Name]; ok {
-				return methodMeta.ReturnType
+		receiverName := xBaseName
+		if ptr, ok := xType.(transpiler.PointerType); ok {
+			if _, isGeneric := ptr.Elem.(transpiler.GenericType); !isGeneric {
+				receiverName = ptr.Elem.BaseName()
 			}
+		}
+		if result := t.resolveMethodCallType(receiverName, sel.Sel.Name, nil, e.Args, -1); !result.IsNil() {
+			return result
 		}
 	}
 	if xType == nil {
