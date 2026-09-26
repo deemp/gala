@@ -96,6 +96,35 @@ func TestReportToSnapshotsCompletion(t *testing.T) {
 	}
 }
 
+// A file that completes within the clock's resolution has a zero total, and
+// every phase duration is then a fraction of zero. The percentage has to be
+// pinned to 0 explicitly: dividing by it yields NaN, and converting NaN to an
+// int for the bar width is undefined behaviour rather than a wrong number, so
+// a normal run would not surface it as a visibly bad report.
+func TestReportToZeroTotalDoesNotDivideByZero(t *testing.T) {
+	start := time.Unix(100, 0)
+	p := &Profiler{
+		start:     start,
+		completed: start,
+		file:      "instant.gala",
+		events:    []event{{label: "parse", duration: 0}},
+	}
+
+	var output bytes.Buffer
+	p.ReportTo(&output)
+	if text := output.String(); !strings.Contains(text, "0.0%") {
+		t.Fatalf("zero-total report did not report 0.0%%: %s", text)
+	}
+
+	summary := &Summary{start: start}
+	summary.Add(p)
+	output.Reset()
+	summary.ReportTo(&output)
+	if text := output.String(); !strings.Contains(text, "0.0%") {
+		t.Fatalf("zero-total summary did not report 0.0%%: %s", text)
+	}
+}
+
 func TestProfilerReportTo(t *testing.T) {
 	start := time.Unix(100, 0)
 	p := &Profiler{
