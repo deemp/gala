@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"martianoff/gala/internal/parser/grammar"
 	"martianoff/gala/internal/transpiler"
 	"martianoff/gala/internal/transpiler/infer"
 
@@ -14,7 +15,8 @@ import (
 // once per file rather than once per expression inference, and shared by
 // pointer between runs. These tests pin the two things that makes safe: the
 // conversion is actually reused, and every state the conversion reads
-// invalidates it.
+// invalidates it — derived, where the state has a change token, and announced
+// at the site, where it does not.
 
 // funcTypeEnvFixture builds a transformer with a scope holding `x` and a
 // function table shaped like a real package's.
@@ -60,18 +62,181 @@ func TestFunctionTypeEnvIsReusedUntilInvalidated(t *testing.T) {
 	require.Equal(t, first["plain"], second["plain"])
 	require.Equal(t, first["generic"], second["generic"])
 
-	// Each state the conversion reads must invalidate it.
+	// Each state the conversion reads that has no change token of its own must
+	// invalidate it. The import manager is absent from this table on purpose:
+	// it carries a revision, and TestFunctionTypeEnvFollowsImportChanges
+	// covers that.
 	for name, invalidate := range map[string]func(){
-		"typeMetas":    func() { tr.typeMetas["a.Other"] = &transpiler.TypeMetadata{Name: "Other"}; tr.invalidateTypeEnv() },
-		"typeAliases":  func() { tr.typeAliases["Alias"] = transpiler.BasicType{Name: "int"}; tr.invalidateTypeEnv() },
-		"functions":    func() { tr.functions["added"] = &transpiler.FunctionMetadata{}; tr.invalidateTypeEnv() },
-		"importsAdded": func() { tr.importManager.Add("example.com/b", "", true, "b"); tr.invalidateTypeEnv() },
+		"typeMetas":   func() { tr.typeMetas["a.Other"] = &transpiler.TypeMetadata{Name: "Other"}; tr.invalidateTypeEnv() },
+		"typeAliases": func() { tr.typeAliases["Alias"] = transpiler.BasicType{Name: "int"}; tr.invalidateTypeEnv() },
+		"functions":   func() { tr.functions["added"] = &transpiler.FunctionMetadata{}; tr.invalidateTypeEnv() },
 	} {
 		before := tr.functionTypeEnv()
 		invalidate()
 		after := tr.functionTypeEnv()
 		require.False(t, sameTypeEnv(before, after), "%s did not invalidate the function environment", name)
 	}
+}
+
+// The import manager moves a revision on every mutation of its entry set, and
+// the cache is stamped with the revision it was built at, so a site that adds,
+// renames or drops an import cannot leave it stale by forgetting to say so.
+// Nothing below announces anything: each case mutates the manager and reads the
+// environment back, so removing the revision from either side of the compare,
+// or the bump from a mutator, turns a case into a failure.
+func TestFunctionTypeEnvFollowsImportChanges(t *testing.T) {
+	// A signature that mentions an unqualified type, so the conversion has to
+	// resolve the name against the import set.
+	withThing := func(t *testing.T) *galaASTTransformer {
+		t.Helper()
+		tr := funcTypeEnvFixture(t)
+		tr.functions["takesThing"] = &transpiler.FunctionMetadata{
+			ParamTypes: []transpiler.Type{transpiler.NamedType{Name: "Thing"}},
+			ReturnType: transpiler.BasicType{Name: "int"},
+		}
+		tr.invalidateTypeEnv()
+		return tr
+	}
+	thingArg := func(t *testing.T, env infer.TypeEnv) string {
+		t.Helper()
+		return asTypeConst(t, asTypeApp(t, env["takesThing"].Type).Args[0]).Name
+	}
+
+	t.Run("an added import becomes visible", func(t *testing.T) {
+		tr := withThing(t)
+		require.Equal(t, "Thing", thingArg(t, tr.functionTypeEnv()),
+			"setup: nothing is imported yet, so the name cannot resolve")
+
+		tr.importManager.Add("example.com/a", "", false, "a")
+
+		after := tr.functionTypeEnv()
+		require.Equal(t, "a.Thing", thingArg(t, after),
+			"the environment still holds the answer from before the import existed")
+	})
+
+	t.Run("a removed import stops resolving", func(t *testing.T) {
+		tr := withThing(t)
+		tr.importManager.Add("example.com/a", "", false, "a")
+		require.Equal(t, "a.Thing", thingArg(t, tr.functionTypeEnv()), "setup: the import should resolve")
+
+		entry, _ := tr.importManager.GetByPath("example.com/a")
+		tr.importManager.removeEntry(entry)
+
+		require.Equal(t, "Thing", thingArg(t, tr.functionTypeEnv()),
+			"the environment still resolves a name against an import that is gone")
+	})
+
+	t.Run("a renamed import is visible", func(t *testing.T) {
+		tr := withThing(t)
+		tr.importManager.Add("example.com/a", "", false, "a")
+		tr.typeMetas["aa.Thing"] = &transpiler.TypeMetadata{Name: "Thing"}
+		require.Equal(t, "a.Thing", thingArg(t, tr.functionTypeEnv()), "setup: the pre-rename name should resolve")
+
+		tr.importManager.UpdateActualPackageName("example.com/a", "aa")
+
+		require.Equal(t, "aa.Thing", thingArg(t, tr.functionTypeEnv()),
+			"the environment still resolves against the pre-rename package name")
+	})
+
+	t.Run("an unchanged import set keeps the environment", func(t *testing.T) {
+		tr := withThing(t)
+		tr.importManager.Add("example.com/a", "", false, "a")
+		first := tr.functionTypeEnv()
+		require.True(t, sameTypeEnv(first, tr.functionTypeEnv()),
+			"setup: a second read with no import change should reuse the cache")
+	})
+}
+
+// The state the conversion reads is written in four places during a transform,
+// not at its entry. The import block is covered by the derived mechanism
+// (above), so the three below announce the change themselves, and each of
+// those is the only thing standing between a mid-walk write and a stale
+// environment. So each case here drives the real site — the function the
+// traversal actually calls, with a node parsed from source — and then reads the
+// environment back, with no invalidation call of its own. Deleting the
+// invalidateTypeEnv from any of them leaves the environment cached and fails
+// the case that names it.
+func TestFunctionTypeEnvIsRebuiltByTheSitesThatInvalidateIt(t *testing.T) {
+	// prime builds the cache and returns the environment it produced, having
+	// checked that it really is cached: a case that passed because the
+	// environment was never reused would prove nothing.
+	prime := func(t *testing.T) (*galaASTTransformer, infer.TypeEnv) {
+		t.Helper()
+		tr := funcTypeEnvFixture(t)
+		env := tr.functionTypeEnv()
+		require.True(t, sameTypeEnv(env, tr.functionTypeEnv()), "setup: the environment was not cached")
+		return tr, env
+	}
+	// requireRebuilt asserts the next caller is handed a different environment.
+	requireRebuilt := func(t *testing.T, tr *galaASTTransformer, before infer.TypeEnv, site string) {
+		t.Helper()
+		require.False(t, sameTypeEnv(before, tr.functionTypeEnv()),
+			"%s did not invalidate the cached function environment", site)
+	}
+
+	t.Run("transformImportDeclaration", func(t *testing.T) {
+		tr, before := prime(t)
+		_, err := tr.transformImportDeclaration(importDeclarationContext(t, `import "example.com/a"`))
+		require.NoError(t, err)
+		requireRebuilt(t, tr, before, "transformImportDeclaration")
+	})
+
+	t.Run("the type alias branch of transformTypeDeclaration", func(t *testing.T) {
+		tr, before := prime(t)
+		_, err := tr.transformTypeDeclaration(typeDeclarationContext(t, "type Coord int"))
+		require.NoError(t, err)
+		require.Contains(t, tr.typeAliases, "Coord", "setup: the alias was not registered")
+		requireRebuilt(t, tr, before, "the type alias branch of transformTypeDeclaration")
+	})
+
+	t.Run("registerStructMetaTypeMeta", func(t *testing.T) {
+		tr, before := prime(t)
+		tr.registerStructMetaTypeMeta("_StructMeta_Person", "main.Person")
+		require.Contains(t, tr.typeMetas, "_StructMeta_Person", "setup: the metadata was not registered")
+		requireRebuilt(t, tr, before, "registerStructMetaTypeMeta")
+	})
+
+	t.Run("registerEmbeddedFSMetadata", func(t *testing.T) {
+		tr, before := prime(t)
+		tr.registerEmbeddedFSMetadata()
+		require.Contains(t, tr.typeMetas, transpiler.TypeEmbeddedFS, "setup: the metadata was not registered")
+		requireRebuilt(t, tr, before, "registerEmbeddedFSMetadata")
+	})
+}
+
+// sourceFileContext parses a one-declaration GALA file and returns its context,
+// so a test can hand a real traversal function the node it would be given.
+func sourceFileContext(t *testing.T, decl string) *grammar.SourceFileContext {
+	t.Helper()
+	tree, _, err := transpiler.NewAntlrGalaParser().Parse("package main\n\n" + decl + "\n")
+	if err != nil {
+		t.Fatalf("parsing %q: %v", decl, err)
+	}
+	sourceFile, ok := any(tree).(*grammar.SourceFileContext)
+	if !ok {
+		t.Fatalf("parse tree is %T, want *grammar.SourceFileContext", tree)
+	}
+	return sourceFile
+}
+
+func importDeclarationContext(t *testing.T, decl string) *grammar.ImportDeclarationContext {
+	t.Helper()
+	imports := sourceFileContext(t, decl).AllImportDeclaration()
+	if len(imports) != 1 {
+		t.Fatalf("%q yielded %d import declarations, want 1", decl, len(imports))
+	}
+	return imports[0].(*grammar.ImportDeclarationContext)
+}
+
+func typeDeclarationContext(t *testing.T, decl string) *grammar.TypeDeclarationContext {
+	t.Helper()
+	for _, top := range sourceFileContext(t, decl).AllTopLevelDeclaration() {
+		if typeDecl, ok := top.TypeDeclaration().(*grammar.TypeDeclarationContext); ok {
+			return typeDecl
+		}
+	}
+	t.Fatalf("%q yielded no type declaration", decl)
+	return nil
 }
 
 func TestFunctionTypeEnvRebuildsWhenScopeShadowsANormalizedName(t *testing.T) {

@@ -92,6 +92,7 @@ type galaASTTransformer struct {
 	typeEnvEpoch             uint32                       // invalidates funcTypeEnv; see invalidateTypeEnv
 	funcTypeEnv              infer.TypeEnv                // cached function-derived half of the Hindley-Milner environment for the current file; see functionTypeEnv
 	funcTypeEnvEpoch         uint32                       // typeEnvEpoch the cache above was built at
+	funcTypeEnvImportRev     uint64                       // importManager.Revision the cache above was built at, so an import change rebuilds it without being announced
 	funcTypeEnvNames         map[string]struct{}          // unqualified type names the cached environment normalized; binding one of them in scope makes the cache stale (see scopeShadowsFuncTypeNames)
 	typeNameScratch          typeNameMemo                 // reusable memo for the per-call scope-to-typeEnv conversion in buildTypeEnv
 }
@@ -218,6 +219,9 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	}
 	// t.functions, t.typeMetas, t.typeAliases and the import manager have all
 	// just been replaced, so a cached function environment no longer matches.
+	// The epoch is what covers the import manager too: its replacement starts
+	// its revision back at zero, which a revision stamped before it could
+	// match by accident.
 	t.invalidateTypeEnv()
 	t.goTypeInfo = richAST.GoTypeInfo
 	t.tempVarCount = 0
@@ -327,10 +331,6 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	for path, actualPkgName := range richAST.Packages {
 		t.importManager.UpdateActualPackageName(path, actualPkgName)
 	}
-	// The renames above change the package names a bare name resolves against,
-	// so the function environment has to be rebuilt. The resolver snapshot does
-	// not need telling: it compares the import manager's revision on use.
-	t.invalidateTypeEnv()
 
 	// Error on symbol clashes between dot-imported packages.
 	// Use the first import declaration's position for error reporting.

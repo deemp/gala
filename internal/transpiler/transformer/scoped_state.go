@@ -119,6 +119,7 @@ var accumulatedStateFields = []string{
 	"typeEnvEpoch",
 	"funcTypeEnv",
 	"funcTypeEnvEpoch",
+	"funcTypeEnvImportRev",
 	"funcTypeEnvNames",
 	"typeNameScratch",
 }

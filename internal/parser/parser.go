@@ -27,6 +27,13 @@ func (p *AntlrGalaParser) Parse(input string) (antlr.Tree, map[int]string, error
 	return tree, docs, nil
 }
 
+type sourceFileParseResult struct {
+	input  *antlr.InputStream
+	tree   antlr.Tree
+	tokens []antlr.Token
+	errors []error
+}
+
 // parseSourceFileAttempt parses input once under the given ANTLR prediction
 // mode and returns the tree, any syntax errors, and the token stream the doc
 // comments can be harvested from.
@@ -45,13 +52,6 @@ func (p *AntlrGalaParser) Parse(input string) (antlr.Tree, map[int]string, error
 // mutex-protected DFA set (built once) so DFA state is still reused across
 // files. The deserialized ATN stays shared too (it is read-mostly and guards
 // its own lazily-cached token sets with a mutex).
-type sourceFileParseResult struct {
-	input  *antlr.InputStream
-	tree   antlr.Tree
-	tokens []antlr.Token
-	errors []error
-}
-
 func parseSourceFileAttempt(input string, mode int) sourceFileParseResult {
 	is := antlr.NewInputStream(input)
 	lexer := grammar.NewgalaLexer(is)

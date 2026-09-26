@@ -243,6 +243,7 @@ go_test(
     embed = [":transformer"],
     deps = [
         "//galaerr",
+        "//internal/parser/grammar",
         "//internal/transpiler",
         "//internal/transpiler/analyzer",
         "//internal/transpiler/generator",

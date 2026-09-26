@@ -348,6 +348,15 @@ func (t *galaASTTransformer) scopeBindingCount() int {
 // allocations together accounting for all but the scope walk. The conversion
 // is therefore cached and only redone when something it reads has changed.
 //
+// Two things can change that, and they are checked differently. The import
+// manager moves a revision on every mutation of its entry set, so the cache
+// records the revision it was stamped with and a moved revision rebuilds it —
+// the same derived validity the resolver snapshot uses, which means a site
+// that adds, renames or drops an import cannot leave this cache stale by
+// forgetting to say so. The remaining state (t.functions, t.typeMetas,
+// t.typeAliases) has no such token, so writes to it are announced through
+// invalidateTypeEnv.
+//
 // Cached schemes are shared by pointer across inference runs. That is safe
 // because infer treats Type and Scheme as immutable: unification returns a
 // Substitution instead of binding into a variable, and instantiate hands a
@@ -364,6 +373,7 @@ func (t *galaASTTransformer) scopeBindingCount() int {
 func (t *galaASTTransformer) functionTypeEnv() infer.TypeEnv {
 	if t.funcTypeEnv != nil &&
 		t.funcTypeEnvEpoch == t.typeEnvEpoch &&
+		t.funcTypeEnvImportRev == t.importManager.Revision() &&
 		!t.scopeShadowsFuncTypeNames() {
 		return t.funcTypeEnv
 	}
@@ -421,6 +431,7 @@ func (t *galaASTTransformer) functionTypeEnv() infer.TypeEnv {
 
 	t.funcTypeEnv = env
 	t.funcTypeEnvEpoch = t.typeEnvEpoch
+	t.funcTypeEnvImportRev = t.importManager.Revision()
 	t.funcTypeEnvNames = memo.consulted
 	return env
 }
@@ -456,9 +467,11 @@ func (t *galaASTTransformer) scopeShadowsFuncTypeNames() bool {
 }
 
 // invalidateTypeEnv marks the cached function environment stale. Every write
-// to the state the conversion reads — t.functions, t.typeMetas, t.typeAliases
-// and the import manager — must call this, because several of them happen
-// mid-traversal rather than at Transform entry.
+// to the state the conversion reads that has no change token of its own —
+// t.functions, t.typeMetas and t.typeAliases — must call this, because several
+// of them happen mid-traversal rather than at Transform entry. Writes to the
+// import manager are deliberately absent: it carries a revision that
+// functionTypeEnv compares directly.
 func (t *galaASTTransformer) invalidateTypeEnv() {
 	t.typeEnvEpoch++
 }
