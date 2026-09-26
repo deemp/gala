@@ -463,21 +463,6 @@ func (t *galaASTTransformer) invalidateTypeEnv() {
 	t.typeEnvEpoch++
 }
 
-// invalidateImportCaches marks both caches that read the import manager stale.
-//
-// The function environment resolves unqualified names through the import
-// manager, and the resolver snapshot holds a copy of its entries, so a change
-// to the import set invalidates both. They are grouped in one function because
-// the failure mode of calling only one is a bare name that resolves against a
-// package the file no longer imports, and that is easy to miss when the two
-// invalidations sit at the end of a long function.
-//
-// Every site that adds, renames or removes an import entry must call this.
-func (t *galaASTTransformer) invalidateImportCaches() {
-	t.invalidateTypeEnv()
-	t.cachedTypeResolver = nil
-}
-
 func (t *galaASTTransformer) substituteTypeParams(typ infer.Type, tvMap map[string]*infer.TypeVariable) infer.Type {
 	if typ == nil {
 		return nil

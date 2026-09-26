@@ -92,6 +92,7 @@ var accumulatedStateFields = []string{
 	"companionObjects",
 	"importManager",
 	"cachedTypeResolver",
+	"cachedTypeResolverRev",
 	"tempVarCount",
 	"inferer",
 	"typeAliases",

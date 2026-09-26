@@ -55,6 +55,7 @@ type galaASTTransformer struct {
 	companionObjects         map[string]*transpiler.CompanionObjectMetadata // companion name -> metadata
 	importManager            *ImportManager                                 // unified import tracking (includes transitive imports and dot-import usage)
 	cachedTypeResolver       *resolver.TypeResolver
+	cachedTypeResolverRev    uint64 // import-manager revision cachedTypeResolver was built at
 	tempVarCount             int
 	inferer                  *infer.Inferer
 	currentFuncReturnType    transpiler.Type              // return type of the function currently being transformed
@@ -209,6 +210,7 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	}
 	t.importManager = NewImportManager()
 	t.cachedTypeResolver = nil
+	t.cachedTypeResolverRev = 0
 	t.typeAliases = make(map[string]transpiler.Type)
 	// Load type aliases from sibling files (extracted by analyzer)
 	for name, underlyingType := range richAST.TypeAliases {
@@ -325,8 +327,10 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	for path, actualPkgName := range richAST.Packages {
 		t.importManager.UpdateActualPackageName(path, actualPkgName)
 	}
-	// The renames above change the package names a bare name resolves against.
-	t.invalidateImportCaches()
+	// The renames above change the package names a bare name resolves against,
+	// so the function environment has to be rebuilt. The resolver snapshot does
+	// not need telling: it compares the import manager's revision on use.
+	t.invalidateTypeEnv()
 
 	// Error on symbol clashes between dot-imported packages.
 	// Use the first import declaration's position for error reporting.
@@ -338,7 +342,7 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 	if err := t.importManager.ValidateDotImports(richAST, importLine, importCol); err != nil {
 		return nil, nil, err
 	}
-	t.cachedTypeResolver = t.buildTypeResolver()
+	t.cacheTypeResolver()
 
 	for _, topDeclCtx := range sourceFile.AllTopLevelDeclaration() {
 		decls, err := t.transformTopLevelDeclaration(topDeclCtx)
@@ -511,10 +515,9 @@ func (t *galaASTTransformer) transform(richAST *transpiler.RichAST, collectLSPMe
 		w.Flush()
 	}
 
-	// Remove unused imports from the generated AST.
+	// Remove unused imports from the generated AST. PruneUnused rewrites the
+	// file without touching the import manager, so no cache is invalidated.
 	t.importManager.PruneUnused(file, richAST)
-	// PruneUnused drops entries from the set the resolver snapshot copied.
-	t.invalidateImportCaches()
 
 	return fset, file, nil
 }
@@ -620,11 +623,24 @@ func (t *galaASTTransformer) resolveTypeName(typeName string, exists func(string
 // by trying various package prefixes in order of precedence.
 // Delegates to the shared resolver.TypeResolver for consistent resolution logic.
 func (t *galaASTTransformer) tryResolveSimpleName(name string, exists func(string) bool) (string, bool) {
-	r := t.cachedTypeResolver
-	if r == nil {
-		r = t.buildTypeResolver()
+	// Validity is derived rather than announced: the snapshot records the
+	// import manager's revision, and every mutation of the entry set moves
+	// that revision. A site that adds, renames or drops an import therefore
+	// cannot leave resolution reading a stale copy, whether or not it knows
+	// this cache exists. Rebuilding here rather than only on a nil pointer
+	// also puts the cache back, so an import added mid-walk costs one rebuild
+	// instead of a fresh allocation on every later resolution in the file.
+	if t.cachedTypeResolver == nil || t.cachedTypeResolverRev != t.importManager.Revision() {
+		t.cacheTypeResolver()
 	}
-	return r.Resolve(name, exists)
+	return t.cachedTypeResolver.Resolve(name, exists)
+}
+
+// cacheTypeResolver snapshots the imports this file resolves names against,
+// stamped with the revision they were taken at.
+func (t *galaASTTransformer) cacheTypeResolver() {
+	t.cachedTypeResolver = t.buildTypeResolver()
+	t.cachedTypeResolverRev = t.importManager.Revision()
 }
 
 // buildTypeResolver creates a resolver.TypeResolver from the transformer's current state.
