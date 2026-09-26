@@ -250,7 +250,7 @@ safe sharing without the naive cost of cloning on every update.
 ## Implementation Notes
 
 A few entry points for contributors, beyond what the decisions above already cover. The
-transpiler layout is in [CLAUDE.md](../CLAUDE.md) (`internal/transpiler/transformer` for
+transpiler layout is in [CONTRIBUTING.MD](../CONTRIBUTING.MD#project-architecture) (`internal/transpiler/transformer` for
 GALA-AST → Go-AST, `internal/transpiler/generator` for emission).
 
 - **The wrap/unwrap discipline is where the immutability model actually lives.** Beyond the

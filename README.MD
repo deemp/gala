@@ -80,7 +80,7 @@ Download a pre-built binary from [Releases](https://github.com/martianoff/gala/r
 
 GALA transpiles to Go, so it needs [Go 1.25+](https://go.dev/dl/) on your `PATH` to compile programs.
 
-Or build from source:
+Or build from source (needs [Bazelisk](https://github.com/bazelbuild/bazelisk)):
 
 ```bash
 git clone https://github.com/martianoff/gala.git && cd gala
@@ -639,6 +639,8 @@ After downloading, rename the binary to `gala` (or `gala.exe` on Windows) and ad
 
 ### Build from Source
 
+Building from source needs [Bazelisk](https://github.com/bazelbuild/bazelisk), which runs the Bazel version pinned in `.bazelversion`. The CLI lands at `bazel-bin/cmd/gala/gala_/gala`.
+
 ```bash
 git clone https://github.com/martianoff/gala.git
 cd gala
@@ -689,8 +691,9 @@ Contributions are welcome. Please ensure:
 
 1. `bazel build //...` passes
 2. `bazel test //...` passes
-3. New features include examples in `examples/`
-4. Documentation is updated for grammar/feature changes
+3. `bazel run //:gazelle` has been run if files were added or removed
+4. New features include examples in `examples/`
+5. Documentation is updated for grammar/feature changes
 
 See [CONTRIBUTING.MD](CONTRIBUTING.MD) for details.
 

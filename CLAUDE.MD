@@ -28,8 +28,10 @@ GALA is a programming language that transpiles to Go. Build system: Bazel.
 | Directory | Purpose |
 |-----------|---------|
 | `internal/parser/grammar` | ANTLR4 grammar (DO NOT edit `*.go` files) |
-| `internal/transpiler/generator` | Go code generation from AST |
+| `internal/transpiler/analyzer` | Package metadata extraction; Go type info via the Go SDK |
+| `internal/transpiler/infer` | Hindley-Milner inference (Layer 2) |
 | `internal/transpiler/transformer` | GALA AST to Go AST transformation |
+| `internal/transpiler/generator` | Go code generation from AST |
 | `std` | Standard library (written in GALA) |
 | `test` | Test framework |
 | `examples` | Verification programs |
